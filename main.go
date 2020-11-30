@@ -12,13 +12,13 @@ import (
 )
 
 type DummyJob struct {
-	chat_id int64
+	chatID  int64
 	message string
 	bot     *tgbotapi.BotAPI
 }
 
 func (d DummyJob) Run() {
-	msg := tgbotapi.NewMessage(d.chat_id, d.message)
+	msg := tgbotapi.NewMessage(d.chatID, d.message)
 	d.bot.Send(msg)
 }
 
@@ -40,7 +40,7 @@ func initSqliteDb() *sql.DB {
 	return db
 }
 
-func insertStmt(db *sql.DB, chat_id int64, timezone string, message string) {
+func insertStmt(db *sql.DB, chatID int64, timezone string, message string) {
 
 	tx, err := db.Begin()
 	if err != nil {
@@ -52,31 +52,31 @@ func insertStmt(db *sql.DB, chat_id int64, timezone string, message string) {
 		log.Fatal(err)
 	}
 	defer stmt.Close()
-	_, err = stmt.Exec(chat_id, timezone, message)
+	_, err = stmt.Exec(chatID, timezone, message)
 	if err != nil {
-		log.Printf("%q: %d, %s\n", err, chat_id, timezone)
+		log.Printf("%q: %d, %s\n", err, chatID, timezone)
 	}
 	tx.Commit()
 
 }
 
-func initBot(db *sql.DB, c *cron.Cron, bot *tgbotapi.BotAPI, chat_ids map[int64]bool) {
+func initBot(db *sql.DB, c *cron.Cron, bot *tgbotapi.BotAPI, chatIDs map[int64]bool) {
 	rows, err := db.Query("select chat_id, tz, message from foo")
 	if err != nil {
 		log.Fatal(err)
 	}
 	defer rows.Close()
 	for rows.Next() {
-		var id int64
+		var ID int64
 		var tz string
 		var message string
-		err = rows.Scan(&id, &tz, &message)
+		err = rows.Scan(&ID, &tz, &message)
 		if err != nil {
 			log.Fatal(err)
 		}
-		fmt.Println(id, tz, message)
+		fmt.Println(ID, tz, message)
 
-		makeJobs(c, bot, id, chat_ids)
+		makeJobs(c, bot, ID, chatIDs)
 	}
 	err = rows.Err()
 	if err != nil {
@@ -99,10 +99,12 @@ func botLoop(db *sql.DB) {
 
 	updates, err := bot.GetUpdatesChan(u)
 
-	chat_ids := make(map[int64]bool)
+	chatIDs := make(map[int64]bool)
 	c := cron.New()
 
-	initBot(db, c, bot, chat_ids)
+	initBot(db, c, bot, chatIDs)
+
+	c.AddFunc("CRON_TZ=Europe/Kiev 59 0 * * *", resetJob(chatIDs))
 	c.Start()
 	for update := range updates {
 		if update.Message == nil { // ignore any non-Message Updates
@@ -111,27 +113,65 @@ func botLoop(db *sql.DB) {
 
 		log.Printf("[%s] %s", update.Message.From.UserName, update.Message.Text)
 
-		chat_id := update.Message.Chat.ID
+		chatID := update.Message.Chat.ID
 
-		makeJobs(c, bot, chat_id, chat_ids)
-		insertStmt(db, chat_id, "Europe/Kiev", "whatever")
+		makeJobs(c, bot, chatID, chatIDs)
+		insertStmt(db, chatID, "Europe/Kiev", "whatever")
+
+		if update.Message.IsCommand() {
+			if update.Message.Command() == "pidor" {
+				log.Println(chatIDs)
+				v := chatIDs[chatID]
+				if !v {
+					chatIDs[chatID] = true
+					msg := tgbotapi.NewMessage(chatID, "Я тебя запомнил, слышишь?")
+					bot.Send(msg)
+				} else {
+					log.Println("already remembered this chat id")
+				}
+			}
+		}
 	}
 }
 
-func makeJobs(c *cron.Cron, bot *tgbotapi.BotAPI, chat_id int64, chat_ids map[int64]bool) {
-	_, ok := chat_ids[chat_id]
+func makeJobs(c *cron.Cron, bot *tgbotapi.BotAPI, chatID int64, chatIDs map[int64]bool) {
+	_, ok := chatIDs[chatID]
 	if !ok {
-		chat_ids[chat_id] = true
-		c.AddFunc("CRON_TZ=Europe/Kiev 20 4 * * *", makeJob(chat_id, "It's /pidor o'clock!", bot))
-		c.AddFunc("CRON_TZ=Europe/Kiev 20 16 * * *", makeJob(chat_id, "Che tam po banochkam?", bot))
-		log.Printf("Created tasks for %d", chat_id)
+		chatIDs[chatID] = false
+		c.AddFunc("CRON_TZ=Europe/Kiev 1 23 * * *", reminderJob(chatID, "This is a reminder to call /pidor !", bot, chatIDs))
+		c.AddFunc("CRON_TZ=Europe/Kiev 20 4 * * *", makeJob(chatID, "Банку-раздуплянку полуночникам!", bot))
+		c.AddFunc("CRON_TZ=Europe/Kiev 20 16 * * *", makeJob(chatID, "Ну ты понел", bot))
+		log.Printf("Created tasks for %d", chatID)
 	}
 }
 
-func makeJob(chat_id int64, message string, bot *tgbotapi.BotAPI) func() {
+func makeJob(chatID int64, message string, bot *tgbotapi.BotAPI) func() {
 	return func() {
-		log.Printf("messaging to %d", chat_id)
-		DummyJob{chat_id, "Che tam po banochkam?", bot}.Run()
+
+		log.Printf("messaging to %d", chatID)
+		DummyJob{chatID, message, bot}.Run()
+	}
+}
+
+func reminderJob(chatID int64, message string, bot *tgbotapi.BotAPI, chatIDs map[int64]bool) func() {
+	subJob := makeJob(chatID, message, bot)
+	return func() {
+		v, ok := chatIDs[chatID]
+		if !ok {
+			panic(fmt.Sprintf("this should never happened: %d not in chat IDs", chatID))
+		}
+		if v {
+			subJob()
+		}
+	}
+}
+
+func resetJob(chatIDs map[int64]bool) func() {
+	return func() {
+		for k := range chatIDs {
+			chatIDs[k] = false
+			log.Println("Resetting item %d", k)
+		}
 	}
 }
 
