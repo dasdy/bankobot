@@ -104,7 +104,7 @@ func botLoop(db *sql.DB) {
 
 	initBot(db, c, bot, chatIDs)
 
-	c.AddFunc("CRON_TZ=Europe/Kiev 59 0 * * *", resetJob(chatIDs))
+	c.AddFunc("CRON_TZ=Europe/Kiev 30 23 * * *", resetJob(chatIDs))
 	c.Start()
 	for update := range updates {
 		if update.Message == nil { // ignore any non-Message Updates
@@ -120,10 +120,11 @@ func botLoop(db *sql.DB) {
 
 		if update.Message.IsCommand() {
 			if update.Message.Command() == "pidor" {
+				log.Printf("Detected /pidor command at %d. All chat ids:", chatID)
 				log.Println(chatIDs)
 				v := chatIDs[chatID]
-				if !v {
-					chatIDs[chatID] = true
+				if v {
+					chatIDs[chatID] = false
 					msg := tgbotapi.NewMessage(chatID, "Я тебя запомнил, слышишь?")
 					bot.Send(msg)
 				} else {
@@ -137,7 +138,7 @@ func botLoop(db *sql.DB) {
 func makeJobs(c *cron.Cron, bot *tgbotapi.BotAPI, chatID int64, chatIDs map[int64]bool) {
 	_, ok := chatIDs[chatID]
 	if !ok {
-		chatIDs[chatID] = false
+		chatIDs[chatID] = true
 		c.AddFunc("CRON_TZ=Europe/Kiev 1 23 * * *", reminderJob(chatID, "This is a reminder to call /pidor !", bot, chatIDs))
 		c.AddFunc("CRON_TZ=Europe/Kiev 20 4 * * *", makeJob(chatID, "Банку-раздуплянку полуночникам!", bot))
 		c.AddFunc("CRON_TZ=Europe/Kiev 20 16 * * *", makeJob(chatID, "Ну ты понел", bot))
@@ -162,6 +163,8 @@ func reminderJob(chatID int64, message string, bot *tgbotapi.BotAPI, chatIDs map
 		}
 		if v {
 			subJob()
+		} else {
+			log.Printf("Decided not to remind anything to %d", chatID)
 		}
 	}
 }
@@ -169,8 +172,8 @@ func reminderJob(chatID int64, message string, bot *tgbotapi.BotAPI, chatIDs map
 func resetJob(chatIDs map[int64]bool) func() {
 	return func() {
 		for k := range chatIDs {
-			chatIDs[k] = false
-			log.Println("Resetting item %d", k)
+			chatIDs[k] = true
+			log.Printf("Resetting item %d", k)
 		}
 	}
 }
