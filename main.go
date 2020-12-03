@@ -125,7 +125,10 @@ func botLoop(db *sql.DB) {
 				v := chatIDs[chatID]
 				if v {
 					chatIDs[chatID] = false
-					msg := tgbotapi.NewMessage(chatID, "Я тебя запомнил, слышишь?")
+					// msg := tgbotapi.NewMessage(chatID, "Я тебя запомнил, слышишь?")
+					msg := tgbotapi.NewStickerShare(
+						chatID,
+						"CAACAgIAAxkBAAIBq1_I9VKJwdOKaGlg7VrGfj2-9gHlAAIeAQAC0t1pBceuDjBghrA8HgQ")
 					bot.Send(msg)
 				} else {
 					log.Println("already remembered this chat id")
@@ -140,8 +143,8 @@ func makeJobs(c *cron.Cron, bot *tgbotapi.BotAPI, chatID int64, chatIDs map[int6
 	if !ok {
 		chatIDs[chatID] = true
 		c.AddFunc("CRON_TZ=Europe/Kiev 1 23 * * *", reminderJob(chatID, "This is a reminder to call /pidor !", bot, chatIDs))
-		c.AddFunc("CRON_TZ=Europe/Kiev 20 4 * * *", makeJob(chatID, "Банку-раздуплянку полуночникам!", bot))
-		c.AddFunc("CRON_TZ=Europe/Kiev 20 16 * * *", makeJob(chatID, "Ну ты понел", bot))
+		c.AddFunc("CRON_TZ=Europe/Kiev 20 4 * * *", makeJob(chatID, "Алло?", bot))
+		c.AddFunc("CRON_TZ=Europe/Kiev 20 16 * * *", makeJob(chatID, "https://www.youtube.com/watch?v=-5qmvsZr0F8", bot))
 		log.Printf("Created tasks for %d", chatID)
 	}
 }
