@@ -1,9 +1,11 @@
 package main
 
 import (
+	"bufio"
 	"database/sql"
 	"fmt"
 	"log"
+	"math/rand"
 	"os"
 
 	tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api"
@@ -138,26 +140,32 @@ func botLoop(db *sql.DB) {
 	}
 }
 
+type messageGenerator func() string
+
 func makeJobs(c *cron.Cron, bot *tgbotapi.BotAPI, chatID int64, chatIDs map[int64]bool) {
 	_, ok := chatIDs[chatID]
 	if !ok {
 		chatIDs[chatID] = true
-		c.AddFunc("CRON_TZ=Europe/Kiev 1 23 * * *", reminderJob(chatID, "This is a reminder to call /pidor !", bot, chatIDs))
-		c.AddFunc("CRON_TZ=Europe/Kiev 20 4 * * *", makeJob(chatID, "Алло?", bot))
-		c.AddFunc("CRON_TZ=Europe/Kiev 20 16 * * *", makeJob(chatID, "https://www.youtube.com/watch?v=-5qmvsZr0F8", bot))
+		c.AddFunc("CRON_TZ=Europe/Kiev 1 23 * * *", reminderJob(chatID, func() string { return "This is a reminder to call /pidor !" }, bot, chatIDs))
+		c.AddFunc("CRON_TZ=Europe/Kiev 20 4 * * *", makeJob(chatID, func() string { return randomMessage("420_msg.txt") }, bot))
+		c.AddFunc("CRON_TZ=Europe/Kiev 20 16 * * 3", makeJob(chatID, func() string { return randomMessage("wednesday.txt") }, bot))
+		c.AddFunc("CRON_TZ=Europe/Kiev 20 16 * * 0-2,4-6", makeJob(chatID, func() string { return randomMessage("420_msg.txt") }, bot))
+
+		// Debug messages. Make sure to use testing sqlite db
+		// c.AddFunc("CRON_TZ=Europe/Kiev * * * * 0-2,4-6", makeJob(chatID, func() string { return randomMessage("420_msg.txt") }, bot))
+		// c.AddFunc("CRON_TZ=Europe/Kiev * * * * 3", makeJob(chatID, func() string { return randomMessage("wednesday.txt") }, bot))
 		log.Printf("Created tasks for %d", chatID)
 	}
 }
 
-func makeJob(chatID int64, message string, bot *tgbotapi.BotAPI) func() {
+func makeJob(chatID int64, message messageGenerator, bot *tgbotapi.BotAPI) func() {
 	return func() {
-
 		log.Printf("messaging to %d", chatID)
-		DummyJob{chatID, message, bot}.Run()
+		DummyJob{chatID, message(), bot}.Run()
 	}
 }
 
-func reminderJob(chatID int64, message string, bot *tgbotapi.BotAPI, chatIDs map[int64]bool) func() {
+func reminderJob(chatID int64, message messageGenerator, bot *tgbotapi.BotAPI, chatIDs map[int64]bool) func() {
 	subJob := makeJob(chatID, message, bot)
 	return func() {
 		v, ok := chatIDs[chatID]
@@ -179,6 +187,30 @@ func resetJob(chatIDs map[int64]bool) func() {
 			log.Printf("Resetting item %d", k)
 		}
 	}
+}
+
+func readLines(fname string) ([]string, error) {
+	file, err := os.Open(fname)
+	if err != nil {
+		return nil, err
+	}
+	defer file.Close()
+
+	var lines []string
+	scanner := bufio.NewScanner(file)
+	for scanner.Scan() {
+		lines = append(lines, scanner.Text())
+	}
+	return lines, scanner.Err()
+}
+
+func randomMessage(fname string) string {
+	lines, err := readLines(fname)
+	if err != nil {
+		return "https://www.youtube.com/watch?v=-5qmvsZr0F8"
+	}
+	ix := rand.Intn(len(lines))
+	return lines[ix]
 }
 
 func main() {
