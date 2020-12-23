@@ -7,6 +7,7 @@ import (
 	"log"
 	"math/rand"
 	"os"
+	"time"
 
 	tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api"
 	_ "github.com/mattn/go-sqlite3"
@@ -31,7 +32,7 @@ func initSqliteDb() *sql.DB {
 	}
 
 	sqlStmt := `
-	create table foo (chat_id int not null primary key, tz text, message text);
+	create table foo (chat_id int not null primary key, tz text not null, message text);
 	delete from foo;
 	`
 	_, err = db.Exec(sqlStmt)
@@ -62,7 +63,7 @@ func insertStmt(db *sql.DB, chatID int64, timezone string, message string) {
 
 }
 
-func initBot(db *sql.DB, c *cron.Cron, bot *tgbotapi.BotAPI, chatIDs map[int64]bool) {
+func initBot(db *sql.DB, c *cron.Cron, bot *tgbotapi.BotAPI, chatIDs map[int64]bool, regMsg, wedMsg chan string) {
 	rows, err := db.Query("select chat_id, tz, message from foo")
 	if err != nil {
 		log.Fatal(err)
@@ -78,12 +79,16 @@ func initBot(db *sql.DB, c *cron.Cron, bot *tgbotapi.BotAPI, chatIDs map[int64]b
 		}
 		fmt.Println(ID, tz, message)
 
-		makeJobs(c, bot, ID, chatIDs)
+		makeJobs(c, bot, ID, chatIDs, regMsg, wedMsg, tz)
 	}
 	err = rows.Err()
 	if err != nil {
 		log.Fatal(err)
 	}
+}
+
+func tgbotApiKey() string {
+	return os.Getenv("TG_API_KEY")
 }
 
 func botLoop(db *sql.DB) {
@@ -104,7 +109,13 @@ func botLoop(db *sql.DB) {
 	chatIDs := make(map[int64]bool)
 	c := cron.New()
 
-	initBot(db, c, bot, chatIDs)
+	regularMsgs := make(chan string)
+	wednesdayMsgs := make(chan string)
+
+	go linesGenerator("420_msg.txt", regularMsgs)
+	go linesGenerator("wednesday.txt", wednesdayMsgs)
+
+	initBot(db, c, bot, chatIDs, regularMsgs, wednesdayMsgs)
 
 	c.AddFunc("CRON_TZ=Europe/Kiev 30 23 * * *", resetJob(chatIDs))
 	c.Start()
@@ -117,7 +128,7 @@ func botLoop(db *sql.DB) {
 
 		chatID := update.Message.Chat.ID
 
-		makeJobs(c, bot, chatID, chatIDs)
+		makeJobs(c, bot, chatID, chatIDs, regularMsgs, wednesdayMsgs, "Europe/Kiev")
 		insertStmt(db, chatID, "Europe/Kiev", "whatever")
 
 		if update.Message.IsCommand() {
@@ -136,36 +147,58 @@ func botLoop(db *sql.DB) {
 					log.Println("already remembered this chat id")
 				}
 			}
+			if update.Message.Command() == "setTimezone" {
+
+			}
 		}
 	}
 }
 
-type messageGenerator func() string
+type MessageGenerator interface {
+	Get() string
+}
 
-func makeJobs(c *cron.Cron, bot *tgbotapi.BotAPI, chatID int64, chatIDs map[int64]bool) {
+type ChanMessageGenerator chan string
+type ConstMessageGenerator string
+
+func (msgsPool ChanMessageGenerator) Get() string {
+	return <-msgsPool
+}
+
+func (msgsPool ConstMessageGenerator) Get() string {
+	return string(msgsPool)
+}
+
+func makeJobs(c *cron.Cron, bot *tgbotapi.BotAPI, chatID int64, chatIDs map[int64]bool, regMsg, wedMsg chan string, timezone string) {
 	_, ok := chatIDs[chatID]
 	if !ok {
 		chatIDs[chatID] = true
-		c.AddFunc("CRON_TZ=Europe/Kiev 1 23 * * *", reminderJob(chatID, func() string { return "This is a reminder to call /pidor !" }, bot, chatIDs))
-		c.AddFunc("CRON_TZ=Europe/Kiev 20 4 * * *", makeJob(chatID, func() string { return randomMessage("420_msg.txt") }, bot))
-		c.AddFunc("CRON_TZ=Europe/Kiev 20 16 * * 3", makeJob(chatID, func() string { return randomMessage("wednesday.txt") }, bot))
-		c.AddFunc("CRON_TZ=Europe/Kiev 20 16 * * 0-2,4-6", makeJob(chatID, func() string { return randomMessage("420_msg.txt") }, bot))
+		c.AddFunc(
+			fmt.Sprintf("CRON_TZ=%s 1 23 * * *", timezone),
+			reminderJob(chatID, ConstMessageGenerator("This is a reminder to call /pidor !"), bot, chatIDs))
+		c.AddFunc(
+			fmt.Sprintf("CRON_TZ=%s 20 4 * * *", timezone),
+			makeJob(chatID, ChanMessageGenerator(regMsg), bot))
+		c.AddFunc(
+			fmt.Sprintf("CRON_TZ=%s 20 16 * * 3", timezone),
+			makeJob(chatID, ChanMessageGenerator(wedMsg), bot))
+		c.AddFunc(
+			fmt.Sprintf("CRON_TZ=%s 20 16 * * 0-2,4-6", timezone),
+			makeJob(chatID, ChanMessageGenerator(regMsg), bot))
 
 		// Debug messages. Make sure to use testing sqlite db
-		// c.AddFunc("CRON_TZ=Europe/Kiev * * * * 0-2,4-6", makeJob(chatID, func() string { return randomMessage("420_msg.txt") }, bot))
-		// c.AddFunc("CRON_TZ=Europe/Kiev * * * * 3", makeJob(chatID, func() string { return randomMessage("wednesday.txt") }, bot))
 		log.Printf("Created tasks for %d", chatID)
 	}
 }
 
-func makeJob(chatID int64, message messageGenerator, bot *tgbotapi.BotAPI) func() {
+func makeJob(chatID int64, message MessageGenerator, bot *tgbotapi.BotAPI) func() {
 	return func() {
 		log.Printf("messaging to %d", chatID)
-		DummyJob{chatID, message(), bot}.Run()
+		DummyJob{chatID, message.Get(), bot}.Run()
 	}
 }
 
-func reminderJob(chatID int64, message messageGenerator, bot *tgbotapi.BotAPI, chatIDs map[int64]bool) func() {
+func reminderJob(chatID int64, message MessageGenerator, bot *tgbotapi.BotAPI, chatIDs map[int64]bool) func() {
 	subJob := makeJob(chatID, message, bot)
 	return func() {
 		v, ok := chatIDs[chatID]
@@ -204,16 +237,22 @@ func readLines(fname string) ([]string, error) {
 	return lines, scanner.Err()
 }
 
-func randomMessage(fname string) string {
-	lines, err := readLines(fname)
-	if err != nil {
-		return "https://www.youtube.com/watch?v=-5qmvsZr0F8"
+func linesGenerator(fname string, out chan string) {
+	for {
+		lines, err := readLines(fname)
+		if err != nil {
+			out <- "https://www.youtube.com/watch?v=-5qmvsZr0F8"
+		}
+		rand.Shuffle(len(lines), func(i, j int) { lines[i], lines[j] = lines[j], lines[i] })
+
+		for _, l := range lines {
+			out <- l
+		}
 	}
-	ix := rand.Intn(len(lines))
-	return lines[ix]
 }
 
 func main() {
+	rand.Seed(time.Now().UnixNano())
 	db := initSqliteDb()
 	defer db.Close()
 	botLoop(db)
