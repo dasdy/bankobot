@@ -14,23 +14,17 @@ import (
 	"github.com/robfig/cron"
 )
 
-type DummyJob struct {
+type BotMessage struct {
 	chatID  int64
 	message string
-	bot     *tgbotapi.BotAPI
 }
 
 type BotConfig struct {
 	db             *sql.DB
-	botapi         *tgbotapi.BotAPI
 	regMsg, wedMsg chan string
+	sendingChan    chan BotMessage
 	chatIDs        map[int64]bool
 	cron           *cron.Cron
-}
-
-func (d DummyJob) Run() {
-	msg := tgbotapi.NewMessage(d.chatID, d.message)
-	d.bot.Send(msg)
 }
 
 func initSqliteDb() *sql.DB {
@@ -71,15 +65,25 @@ func insertStmt(db *sql.DB, chatID int64, timezone string, message string) {
 
 }
 
+func sendMessages(ch chan BotMessage, bot *tgbotapi.BotAPI) {
+	for {
+		msg := <-ch
+		botMsg := tgbotapi.NewMessage(msg.chatID, msg.message)
+		bot.Send(botMsg)
+	}
+}
+
 func initBot(db *sql.DB, bot *tgbotapi.BotAPI) BotConfig {
 	chatIDs := make(map[int64]bool)
 	c := cron.New()
 
 	regMsg := make(chan string)
 	wedMsg := make(chan string)
+	sendingChan := make(chan BotMessage)
 
 	go linesGenerator("420_msg.txt", regMsg)
 	go linesGenerator("wednesday.txt", wedMsg)
+	go sendMessages(sendingChan, bot)
 
 	rows, err := db.Query("select chat_id, tz, message from foo")
 	if err != nil {
@@ -88,12 +92,12 @@ func initBot(db *sql.DB, bot *tgbotapi.BotAPI) BotConfig {
 	defer rows.Close()
 
 	bc := BotConfig{
-		db:      db,
-		botapi:  bot,
-		cron:    c,
-		regMsg:  regMsg,
-		wedMsg:  wedMsg,
-		chatIDs: chatIDs,
+		db:          db,
+		cron:        c,
+		regMsg:      regMsg,
+		wedMsg:      wedMsg,
+		chatIDs:     chatIDs,
+		sendingChan: sendingChan,
 	}
 
 	for rows.Next() {
@@ -134,7 +138,7 @@ func botLoop(db *sql.DB) {
 	log.Printf("Authorized on account %s", bot.Self.UserName)
 
 	u := tgbotapi.NewUpdate(0)
-	u.Timeout = 60
+	u.Timeout = 600
 
 	updates, err := bot.GetUpdatesChan(u)
 
@@ -190,39 +194,41 @@ func (msgsPool ConstMessageGenerator) Get() string {
 	return string(msgsPool)
 }
 
-func (bc BotConfig) makeJobs(chatID int64, timezone string) {
+func (bc *BotConfig) makeJobs(chatID int64, timezone string) {
 	_, ok := bc.chatIDs[chatID]
 	if !ok {
 		bc.chatIDs[chatID] = true
 		bc.cron.AddFunc(
 			fmt.Sprintf("CRON_TZ=%s 1 23 * * *", timezone),
-			reminderJob(chatID, ConstMessageGenerator("This is a reminder to call /pidor !"), bc.botapi, bc.chatIDs))
+			bc.reminderJob(chatID, ConstMessageGenerator("This is a reminder to call /pidor !")))
 		bc.cron.AddFunc(
 			fmt.Sprintf("CRON_TZ=%s 20 4 * * *", timezone),
-			makeJob(chatID, ChanMessageGenerator(bc.regMsg), bc.botapi))
+			bc.makeJob(chatID, ChanMessageGenerator(bc.regMsg)))
 		bc.cron.AddFunc(
 			fmt.Sprintf("CRON_TZ=%s 20 16 * * 3", timezone),
-			makeJob(chatID, ChanMessageGenerator(bc.wedMsg), bc.botapi))
+			bc.makeJob(chatID, ChanMessageGenerator(bc.wedMsg)))
 		bc.cron.AddFunc(
 			fmt.Sprintf("CRON_TZ=%s 20 16 * * 0-2,4-6", timezone),
-			makeJob(chatID, ChanMessageGenerator(bc.regMsg), bc.botapi))
+			bc.makeJob(chatID, ChanMessageGenerator(bc.regMsg)))
 
 		// Debug messages. Make sure to use testing sqlite db
 		log.Printf("Created tasks for %d", chatID)
 	}
 }
 
-func makeJob(chatID int64, message MessageGenerator, bot *tgbotapi.BotAPI) func() {
+func (bc *BotConfig) makeJob(chatID int64, message MessageGenerator) func() {
 	return func() {
 		log.Printf("messaging to %d", chatID)
-		DummyJob{chatID, message.Get(), bot}.Run()
+		msg := message.Get()
+		botMessage := BotMessage{message: msg, chatID: chatID}
+		bc.sendingChan <- botMessage
 	}
 }
 
-func reminderJob(chatID int64, message MessageGenerator, bot *tgbotapi.BotAPI, chatIDs map[int64]bool) func() {
-	subJob := makeJob(chatID, message, bot)
+func (bc *BotConfig) reminderJob(chatID int64, message MessageGenerator) func() {
+	subJob := bc.makeJob(chatID, message)
 	return func() {
-		v, ok := chatIDs[chatID]
+		v, ok := bc.chatIDs[chatID]
 		if !ok {
 			panic(fmt.Sprintf("this should never happened: %d not in chat IDs", chatID))
 		}
