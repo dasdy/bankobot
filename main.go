@@ -20,6 +20,14 @@ type DummyJob struct {
 	bot     *tgbotapi.BotAPI
 }
 
+type BotConfig struct {
+	db             *sql.DB
+	botapi         *tgbotapi.BotAPI
+	regMsg, wedMsg chan string
+	chatIDs        map[int64]bool
+	cron           *cron.Cron
+}
+
 func (d DummyJob) Run() {
 	msg := tgbotapi.NewMessage(d.chatID, d.message)
 	d.bot.Send(msg)
@@ -63,12 +71,31 @@ func insertStmt(db *sql.DB, chatID int64, timezone string, message string) {
 
 }
 
-func initBot(db *sql.DB, c *cron.Cron, bot *tgbotapi.BotAPI, chatIDs map[int64]bool, regMsg, wedMsg chan string) {
+func initBot(db *sql.DB, bot *tgbotapi.BotAPI) BotConfig {
+	chatIDs := make(map[int64]bool)
+	c := cron.New()
+
+	regMsg := make(chan string)
+	wedMsg := make(chan string)
+
+	go linesGenerator("420_msg.txt", regMsg)
+	go linesGenerator("wednesday.txt", wedMsg)
+
 	rows, err := db.Query("select chat_id, tz, message from foo")
 	if err != nil {
 		log.Fatal(err)
 	}
 	defer rows.Close()
+
+	bc := BotConfig{
+		db:      db,
+		botapi:  bot,
+		cron:    c,
+		regMsg:  regMsg,
+		wedMsg:  wedMsg,
+		chatIDs: chatIDs,
+	}
+
 	for rows.Next() {
 		var ID int64
 		var tz string
@@ -79,12 +106,17 @@ func initBot(db *sql.DB, c *cron.Cron, bot *tgbotapi.BotAPI, chatIDs map[int64]b
 		}
 		fmt.Println(ID, tz, message)
 
-		makeJobs(c, bot, ID, chatIDs, regMsg, wedMsg, tz)
+		bc.makeJobs(ID, tz)
 	}
 	err = rows.Err()
 	if err != nil {
 		log.Fatal(err)
 	}
+
+	c.AddFunc("CRON_TZ=Europe/Kiev 30 23 * * *", resetJob(chatIDs))
+	c.Start()
+
+	return bc
 }
 
 func tgbotApiKey() string {
@@ -106,19 +138,8 @@ func botLoop(db *sql.DB) {
 
 	updates, err := bot.GetUpdatesChan(u)
 
-	chatIDs := make(map[int64]bool)
-	c := cron.New()
+	botConfig := initBot(db, bot)
 
-	regularMsgs := make(chan string)
-	wednesdayMsgs := make(chan string)
-
-	go linesGenerator("420_msg.txt", regularMsgs)
-	go linesGenerator("wednesday.txt", wednesdayMsgs)
-
-	initBot(db, c, bot, chatIDs, regularMsgs, wednesdayMsgs)
-
-	c.AddFunc("CRON_TZ=Europe/Kiev 30 23 * * *", resetJob(chatIDs))
-	c.Start()
 	for update := range updates {
 		if update.Message == nil { // ignore any non-Message Updates
 			continue
@@ -128,16 +149,16 @@ func botLoop(db *sql.DB) {
 
 		chatID := update.Message.Chat.ID
 
-		makeJobs(c, bot, chatID, chatIDs, regularMsgs, wednesdayMsgs, "Europe/Kiev")
+		botConfig.makeJobs(chatID, "Europe/Kiev")
 		insertStmt(db, chatID, "Europe/Kiev", "whatever")
 
 		if update.Message.IsCommand() {
 			if update.Message.Command() == "pidor" {
 				log.Printf("Detected /pidor command at %d. All chat ids:", chatID)
-				log.Println(chatIDs)
-				v := chatIDs[chatID]
+				log.Println(botConfig.chatIDs)
+				v := botConfig.chatIDs[chatID]
 				if v {
-					chatIDs[chatID] = false
+					botConfig.chatIDs[chatID] = false
 					// msg := tgbotapi.NewMessage(chatID, "Я тебя запомнил, слышишь?")
 					msg := tgbotapi.NewStickerShare(
 						chatID,
@@ -169,22 +190,22 @@ func (msgsPool ConstMessageGenerator) Get() string {
 	return string(msgsPool)
 }
 
-func makeJobs(c *cron.Cron, bot *tgbotapi.BotAPI, chatID int64, chatIDs map[int64]bool, regMsg, wedMsg chan string, timezone string) {
-	_, ok := chatIDs[chatID]
+func (bc BotConfig) makeJobs(chatID int64, timezone string) {
+	_, ok := bc.chatIDs[chatID]
 	if !ok {
-		chatIDs[chatID] = true
-		c.AddFunc(
+		bc.chatIDs[chatID] = true
+		bc.cron.AddFunc(
 			fmt.Sprintf("CRON_TZ=%s 1 23 * * *", timezone),
-			reminderJob(chatID, ConstMessageGenerator("This is a reminder to call /pidor !"), bot, chatIDs))
-		c.AddFunc(
+			reminderJob(chatID, ConstMessageGenerator("This is a reminder to call /pidor !"), bc.botapi, bc.chatIDs))
+		bc.cron.AddFunc(
 			fmt.Sprintf("CRON_TZ=%s 20 4 * * *", timezone),
-			makeJob(chatID, ChanMessageGenerator(regMsg), bot))
-		c.AddFunc(
+			makeJob(chatID, ChanMessageGenerator(bc.regMsg), bc.botapi))
+		bc.cron.AddFunc(
 			fmt.Sprintf("CRON_TZ=%s 20 16 * * 3", timezone),
-			makeJob(chatID, ChanMessageGenerator(wedMsg), bot))
-		c.AddFunc(
+			makeJob(chatID, ChanMessageGenerator(bc.wedMsg), bc.botapi))
+		bc.cron.AddFunc(
 			fmt.Sprintf("CRON_TZ=%s 20 16 * * 0-2,4-6", timezone),
-			makeJob(chatID, ChanMessageGenerator(regMsg), bot))
+			makeJob(chatID, ChanMessageGenerator(bc.regMsg), bc.botapi))
 
 		// Debug messages. Make sure to use testing sqlite db
 		log.Printf("Created tasks for %d", chatID)
