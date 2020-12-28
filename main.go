@@ -25,7 +25,7 @@ type BotConfig struct {
 	regMsg, wedMsg chan string
 	sendingChan    chan BotMessage
 	chatIDs        map[int64]*ChatConfig
-	timeZones      map[string]intSet
+	timeZones      map[string]*TimeZoneConfig
 	cron           *cron.Cron
 	modifyLock     *sync.RWMutex
 }
@@ -68,7 +68,7 @@ func insertStmt(db *sql.DB, chatID int64, timezone string, message string) {
 
 }
 
-var DEBUG = false
+var DEBUG = true
 
 func sendMessages(ch chan BotMessage, bot *tgbotapi.BotAPI) {
 	for {
@@ -81,14 +81,16 @@ func sendMessages(ch chan BotMessage, bot *tgbotapi.BotAPI) {
 type ChatConfig struct {
 	shouldSendReminder bool
 	timezone           string
-	cron               *cron.Cron
 }
 
-type intSet map[int64]bool
+type TimeZoneConfig struct {
+	cron  *cron.Cron
+	chats map[int64]bool
+}
 
 func initBot(db *sql.DB, bot *tgbotapi.BotAPI) BotConfig {
 	chatIDs := make(map[int64]*ChatConfig)
-	timezones := make(map[string]intSet)
+	timezones := make(map[string]*TimeZoneConfig)
 	c := cron.New()
 
 	regMsg := make(chan string)
@@ -269,66 +271,74 @@ func (bc *BotConfig) makeJobsUnsafe(chatID int64, timezone string) {
 		return
 	}
 
-	chatIdCron := cron.New()
-	bc.chatIDs[chatID] = &ChatConfig{shouldSendReminder: true, timezone: timezone, cron: chatIdCron}
-
-	regMsgGen := ChanMessageGenerator(bc.regMsg)
-
-	regularJob := timeZoneJob(bc, timezone, func(chatId int64) {
-		bc.sendText(chatId, regMsgGen)
-	})
-
-	wedMsgGen := ChanMessageGenerator(bc.wedMsg)
-	wednesdayJob := timeZoneJob(bc, timezone, func(chatId int64) {
-		bc.sendText(chatId, wedMsgGen)
-	})
-
-	reminderJob := timeZoneJob(bc, timezone, func(chatId int64) {
-		bc.modifyLock.RLock()
-		v, ok := bc.chatIDs[chatID]
-		bc.modifyLock.RUnlock()
-		if !ok {
-			panic(fmt.Sprintf("this should never happened: %d not in chat IDs", chatID))
-		}
-		if v.shouldSendReminder {
-			bc.sendText(chatId, ConstMessageGenerator("This is a reminder to call /pidor"))
-		} else {
-			log.Printf("Decided not to remind anything to %d", chatID)
-		}
-	},
-	)
-
-	bc.addJobUnsafe(timezone, "1 23 * * *", chatID, reminderJob, chatIdCron)
-	bc.addJobUnsafe(timezone, "20 4 * * *", chatID, regularJob, chatIdCron)
-	bc.addJobUnsafe(timezone, "20 16 * * 0-2,4-6", chatID, regularJob, chatIdCron)
-	bc.addJobUnsafe(timezone, "20 16 * * 3", chatID, wednesdayJob, chatIdCron)
-
-	// Debug messages. Make sure to use testing sqlite db
-	log.Printf("Created tasks for %d", chatID)
-
-	if DEBUG {
-		bc.addJobUnsafe(timezone, "* * * * *", chatID, regularJob, chatIdCron)
-		bc.addJobUnsafe(timezone, "* * * * *", chatID, reminderJob, chatIdCron)
-	}
-	chatIdCron.Start()
-
+	bc.addJobsUnsafe(timezone, chatID)
 }
 
-func (bc *BotConfig) addJobUnsafe(timezone string, timeframe string, chatID int64, job func(), c *cron.Cron) {
+func (bc *BotConfig) registerChat(timezone string, chatID int64) {
 	v := bc.timeZones[timezone]
-	if v == nil {
-		v = make(intSet)
-		bc.timeZones[timezone] = make(intSet)
+	v.chats[chatID] = true
+}
+
+func addCronFunc(c *cron.Cron, timezone, frame string, job func()) {
+	c.AddFunc(fmt.Sprintf("CRON_TZ=%s %s", timezone, frame), job)
+}
+
+func (bc *BotConfig) addJobsUnsafe(timezone string, chatID int64) {
+	_, ok := bc.timeZones[timezone]
+	if !ok {
+		log.Printf("Creating new cron instance for timezone %s", timezone)
+		timeZoneCron := cron.New()
+		conf := TimeZoneConfig{cron: timeZoneCron, chats: make(map[int64]bool)}
+		bc.timeZones[timezone] = &conf
+
+		regMsgGen := ChanMessageGenerator(bc.regMsg)
+
+		regularJob := timeZoneJob(bc, timezone, func(chatId int64) {
+			bc.sendText(chatId, regMsgGen)
+		})
+
+		wedMsgGen := ChanMessageGenerator(bc.wedMsg)
+		wednesdayJob := timeZoneJob(bc, timezone, func(chatId int64) {
+			bc.sendText(chatId, wedMsgGen)
+		})
+
+		reminderJob := timeZoneJob(bc, timezone, func(chatId int64) {
+			bc.modifyLock.RLock()
+			v, ok := bc.chatIDs[chatID]
+			bc.modifyLock.RUnlock()
+			if !ok {
+				panic(fmt.Sprintf("this should never happened: %d not in chat IDs", chatID))
+			}
+			if v.shouldSendReminder {
+				bc.sendText(chatId, ConstMessageGenerator("This is a reminder to call /pidor"))
+			} else {
+				log.Printf("Decided not to remind anything to %d", chatID)
+			}
+		},
+		)
+
+		addCronFunc(timeZoneCron, timezone, "1 23 * * *", reminderJob)
+		addCronFunc(timeZoneCron, timezone, "20 4 * * *", regularJob)
+		addCronFunc(timeZoneCron, timezone, "20 16 * * 0-2,4-6", regularJob)
+		addCronFunc(timeZoneCron, timezone, "20 16 * * 3", wednesdayJob)
+
+		log.Printf("Created tasks for %d", chatID)
+
+		if DEBUG {
+			addCronFunc(timeZoneCron, timezone, "* * * * *", regularJob)
+			addCronFunc(timeZoneCron, timezone, "* * * * *", reminderJob)
+		}
+		timeZoneCron.Start()
 	}
-	c.AddFunc(fmt.Sprintf("CRON_TZ=%s %s", timezone, timeframe), job)
-	v[chatID] = true
+	bc.chatIDs[chatID] = &ChatConfig{shouldSendReminder: true, timezone: timezone}
+	bc.registerChat(timezone, chatID)
+
 }
 
 func (bc *BotConfig) deleteJobUnsafe(chatID int64) {
 	chatConf := bc.chatIDs[chatID]
 	v := bc.timeZones[chatConf.timezone]
-	chatConf.cron.Stop()
-	delete(v, chatID)
+	delete(v.chats, chatID)
 	delete(bc.chatIDs, chatID)
 }
 
@@ -337,7 +347,7 @@ func timeZoneJob(bc *BotConfig, timezone string, job func(int64)) func() {
 		bc.modifyLock.RLock()
 		jobs := bc.timeZones[timezone]
 		bc.modifyLock.RUnlock()
-		for chatID := range jobs {
+		for chatID := range jobs.chats {
 			job(chatID)
 		}
 	}
