@@ -68,7 +68,7 @@ func insertStmt(db *sql.DB, chatID int64, timezone string, message string) {
 
 }
 
-var DEBUG = true
+var DEBUG = false
 
 func sendMessages(ch chan BotMessage, bot *tgbotapi.BotAPI) {
 	for {
@@ -138,9 +138,11 @@ func initBot(db *sql.DB, bot *tgbotapi.BotAPI) BotConfig {
 	}
 
 	c.AddFunc("CRON_TZ=Europe/Kiev 30 23 * * *", resetJob(chatIDs))
+	c.AddFunc("CRON_TZ=Europe/Kiev 0 23 * * *", remindJob(&bc))
 
 	if DEBUG {
 		c.AddFunc("CRON_TZ=Europe/Kiev */10 * * * *", resetJob(chatIDs))
+		c.AddFunc("CRON_TZ=Europe/Kiev * * * * *", remindJob(&bc))
 	}
 
 	c.Start()
@@ -302,22 +304,6 @@ func (bc *BotConfig) addJobsUnsafe(timezone string, chatID int64) {
 			bc.sendText(chatId, wedMsgGen)
 		})
 
-		reminderJob := timeZoneJob(bc, timezone, func(chatId int64) {
-			bc.modifyLock.RLock()
-			v, ok := bc.chatIDs[chatID]
-			bc.modifyLock.RUnlock()
-			if !ok {
-				panic(fmt.Sprintf("this should never happened: %d not in chat IDs", chatID))
-			}
-			if v.shouldSendReminder {
-				bc.sendText(chatId, ConstMessageGenerator("This is a reminder to call /pidor"))
-			} else {
-				log.Printf("Decided not to remind anything to %d", chatID)
-			}
-		},
-		)
-
-		addCronFunc(timeZoneCron, timezone, "1 23 * * *", reminderJob)
 		addCronFunc(timeZoneCron, timezone, "20 4 * * *", regularJob)
 		addCronFunc(timeZoneCron, timezone, "20 16 * * 0-2,4-6", regularJob)
 		addCronFunc(timeZoneCron, timezone, "20 16 * * 3", wednesdayJob)
@@ -326,7 +312,6 @@ func (bc *BotConfig) addJobsUnsafe(timezone string, chatID int64) {
 
 		if DEBUG {
 			addCronFunc(timeZoneCron, timezone, "* * * * *", regularJob)
-			addCronFunc(timeZoneCron, timezone, "* * * * *", reminderJob)
 		}
 		timeZoneCron.Start()
 	}
@@ -365,6 +350,19 @@ func resetJob(chatIDs map[int64]*ChatConfig) func() {
 		for k := range chatIDs {
 			x := chatIDs[k]
 			x.shouldSendReminder = true
+			log.Printf("Resetting item %d", k)
+		}
+	}
+}
+
+func remindJob(bc *BotConfig) func() {
+	return func() {
+		chatIDs := bc.chatIDs
+		for k := range chatIDs {
+			x := chatIDs[k]
+			if x.shouldSendReminder {
+				bc.sendText(k, ConstMessageGenerator("This is a reminder to call /pidor"))
+			}
 			log.Printf("Resetting item %d", k)
 		}
 	}
