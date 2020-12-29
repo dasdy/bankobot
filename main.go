@@ -20,10 +20,6 @@ type BotMessage struct {
 	message string
 }
 
-func (cc *BotMessage) String() string {
-	return fmt.Sprintf("BotMessage{%v, %v}", cc.chatID, cc.message)
-}
-
 type BotConfig struct {
 	db             *sql.DB
 	regMsg, wedMsg chan string
@@ -104,6 +100,25 @@ func (cc *TimeZoneConfig) String() string {
 	return fmt.Sprintf("TimeZoneConfig{%v, %v}", cc.cron, cc.chats)
 }
 
+func ShouldSendReminder(lastTimestamp string, now time.Time) bool {
+	const layout string = "2006-01-02 15:04:05"
+	timestamp, err := time.Parse(layout, lastTimestamp)
+
+	if err != nil {
+		return true
+	}
+
+	shouldSendReminder := false
+
+	y1, m1, d1 := now.Date()
+	y2, m2, d2 := timestamp.Date()
+	if d1 != d2 || m1 != m2 || y1 != y2 {
+		shouldSendReminder = true
+	}
+
+	return shouldSendReminder
+}
+
 func initBot(db *sql.DB, bot *tgbotapi.BotAPI) BotConfig {
 	chatIDs := make(map[int64]*ChatConfig)
 	timezones := make(map[string]*TimeZoneConfig)
@@ -134,7 +149,7 @@ func initBot(db *sql.DB, bot *tgbotapi.BotAPI) BotConfig {
 		timeZones:   timezones,
 	}
 
-	y1, m1, d1 := time.Now().Date()
+	now := time.Now()
 	for rows.Next() {
 		var ID int64
 		var tz string
@@ -146,19 +161,11 @@ func initBot(db *sql.DB, bot *tgbotapi.BotAPI) BotConfig {
 		}
 		fmt.Println(ID, tz, message, lastTimestamp)
 
-		const layout string = "2006-01-02 15:04:05"
-		timestamp, err := time.Parse(layout, lastTimestamp)
-
-		shouldSendReminder := false
-		y2, m2, d2 := timestamp.Date()
-
-		if y1 != y2 || m1 != m2 || d1 != d2 {
-			shouldSendReminder = true
-		}
-
 		if err != nil {
 			log.Fatal(err)
 		}
+
+		shouldSendReminder := ShouldSendReminder(lastTimestamp, now)
 
 		bc.modifyLock.Lock()
 		bc.makeJobsUnsafe(ID, tz, shouldSendReminder)
@@ -186,8 +193,8 @@ func tgbotApiKey() string {
 	return os.Getenv("TG_API_KEY")
 }
 
-func botLoop(db *sql.DB) {
-	bot, err := tgbotapi.NewBotAPI(os.Getenv("TG_API_KEY"))
+func initBotConfig(db *sql.DB) (*tgbotapi.UpdatesChannel, *tgbotapi.BotAPI, *BotConfig) {
+	bot, err := tgbotapi.NewBotAPI(tgbotApiKey())
 	if err != nil {
 		log.Panic(err)
 	}
@@ -202,8 +209,13 @@ func botLoop(db *sql.DB) {
 	updates, err := bot.GetUpdatesChan(u)
 
 	botConfig := initBot(db, bot)
+	return &updates, bot, &botConfig
+}
 
-	for update := range updates {
+func botLoop(db *sql.DB) {
+	updates, botApi, botConfig := initBotConfig(db)
+
+	for update := range *updates {
 		if update.Message == nil { // ignore any non-Message Updates
 			continue
 		}
@@ -217,9 +229,9 @@ func botLoop(db *sql.DB) {
 		if update.Message.IsCommand() {
 			switch update.Message.Command() {
 			case "pidor":
-				notifyPidorAccepted(&update, &botConfig, bot)
+				notifyPidorAccepted(&update, botConfig, botApi)
 			case "settz":
-				setTimezone(&update, &botConfig, bot)
+				setTimezone(&update, botConfig, botApi)
 			}
 		}
 	}
