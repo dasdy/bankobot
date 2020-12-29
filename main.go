@@ -20,6 +20,10 @@ type BotMessage struct {
 	message string
 }
 
+func (cc *BotMessage) String() string {
+	return fmt.Sprintf("BotMessage{%v, %v}", cc.chatID, cc.message)
+}
+
 type BotConfig struct {
 	db             *sql.DB
 	regMsg, wedMsg chan string
@@ -30,6 +34,10 @@ type BotConfig struct {
 	modifyLock     *sync.RWMutex
 }
 
+func (cc *BotConfig) String() string {
+	return fmt.Sprintf("BotConfig{%v, %v}", cc.chatIDs, cc.timeZones)
+}
+
 func initSqliteDb() *sql.DB {
 	db, err := sql.Open("sqlite3", "./foo.db")
 	if err != nil {
@@ -37,12 +45,12 @@ func initSqliteDb() *sql.DB {
 	}
 
 	sqlStmt := `
-	create table foo (chat_id int not null primary key, tz text not null);
+	create table foo (chat_id int not null primary key, tz text not null, last_imtestamp text);
 	delete from foo;
 	`
 	_, err = db.Exec(sqlStmt)
 	if err != nil {
-		log.Printf("%q: %s\n", err, sqlStmt)
+		log.Printf("%q: %v\n", err, sqlStmt)
 	}
 
 	return db
@@ -54,15 +62,15 @@ func insertStmt(db *sql.DB, chatID int64, timezone string, message string) {
 	if err != nil {
 		log.Fatal(err)
 	}
-	stmt, err := tx.Prepare(`insert into foo(chat_id, tz, message) values(?, ?, ?)
-	on conflict(chat_id) do update set tz=excluded.tz, message=excluded.message`)
+	stmt, err := tx.Prepare(`insert into foo(chat_id, tz, message, last_timestamp) values(?, ?, ?, datetime('now'))
+	on conflict(chat_id) do update set tz=excluded.tz, message=excluded.message, last_timestamp=excluded.last_timestamp`)
 	if err != nil {
 		log.Fatal(err)
 	}
 	defer stmt.Close()
 	_, err = stmt.Exec(chatID, timezone, message)
 	if err != nil {
-		log.Printf("%q: %d, %s\n", err, chatID, timezone)
+		log.Printf("%q: %d, %v\n", err, chatID, timezone)
 	}
 	tx.Commit()
 
@@ -83,9 +91,17 @@ type ChatConfig struct {
 	timezone           string
 }
 
+func (cc *ChatConfig) String() string {
+	return fmt.Sprintf("ChatConfig{%v, %v}", cc.shouldSendReminder, cc.timezone)
+}
+
 type TimeZoneConfig struct {
 	cron  *cron.Cron
 	chats map[int64]bool
+}
+
+func (cc *TimeZoneConfig) String() string {
+	return fmt.Sprintf("TimeZoneConfig{%v, %v}", cc.cron, cc.chats)
 }
 
 func initBot(db *sql.DB, bot *tgbotapi.BotAPI) BotConfig {
@@ -101,7 +117,7 @@ func initBot(db *sql.DB, bot *tgbotapi.BotAPI) BotConfig {
 	go linesGenerator("wednesday.txt", wedMsg)
 	go sendMessages(sendingChan, bot)
 
-	rows, err := db.Query("select chat_id, tz, message from foo")
+	rows, err := db.Query("select chat_id, tz, message, last_timestamp from foo")
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -118,18 +134,34 @@ func initBot(db *sql.DB, bot *tgbotapi.BotAPI) BotConfig {
 		timeZones:   timezones,
 	}
 
+	y1, m1, d1 := time.Now().Date()
 	for rows.Next() {
 		var ID int64
 		var tz string
 		var message string
-		err = rows.Scan(&ID, &tz, &message)
+		var lastTimestamp string
+		err = rows.Scan(&ID, &tz, &message, &lastTimestamp)
 		if err != nil {
 			log.Fatal(err)
 		}
-		fmt.Println(ID, tz, message)
+		fmt.Println(ID, tz, message, lastTimestamp)
+
+		const layout string = "2006-01-02 15:04:05"
+		timestamp, err := time.Parse(layout, lastTimestamp)
+
+		shouldSendReminder := false
+		y2, m2, d2 := timestamp.Date()
+
+		if y1 != y2 || m1 != m2 || d1 != d2 {
+			shouldSendReminder = true
+		}
+
+		if err != nil {
+			log.Fatal(err)
+		}
 
 		bc.modifyLock.Lock()
-		bc.makeJobsUnsafe(ID, tz)
+		bc.makeJobsUnsafe(ID, tz, shouldSendReminder)
 		bc.modifyLock.Unlock()
 	}
 	err = rows.Err()
@@ -162,7 +194,7 @@ func botLoop(db *sql.DB) {
 
 	bot.Debug = true
 
-	log.Printf("Authorized on account %s", bot.Self.UserName)
+	log.Printf("Authorized on account %v", bot.Self.UserName)
 
 	u := tgbotapi.NewUpdate(0)
 	u.Timeout = 600
@@ -176,7 +208,7 @@ func botLoop(db *sql.DB) {
 			continue
 		}
 
-		log.Printf("[%s] %s", update.Message.From.UserName, update.Message.Text)
+		log.Printf("[%v] %v", update.Message.From.UserName, update.Message.Text)
 
 		chatID := update.Message.Chat.ID
 
@@ -199,7 +231,7 @@ func (bc *BotConfig) addNewChat(db *sql.DB, chatID int64) {
 	bc.modifyLock.RUnlock()
 	if !ok {
 		bc.modifyLock.Lock()
-		bc.makeJobsUnsafe(chatID, "Europe/Kiev")
+		bc.makeJobsUnsafe(chatID, "Europe/Kiev", true)
 		insertStmt(db, chatID, "Europe/Kiev", "whatever")
 		bc.modifyLock.Unlock()
 	}
@@ -226,27 +258,27 @@ func notifyPidorAccepted(update *tgbotapi.Update, bc *BotConfig, bot *tgbotapi.B
 func setTimezone(update *tgbotapi.Update, bc *BotConfig, bot *tgbotapi.BotAPI) {
 	chatID := update.Message.Chat.ID
 	args := update.Message.CommandArguments()
-	log.Printf("Got text: '%s', args: '%s'", update.Message.Text, args)
+	log.Printf("Got text: '%v', args: '%v'", update.Message.Text, args)
 
 	_, err := time.LoadLocation(args)
 	if err != nil {
 		bc.sendingChan <- BotMessage{
 			chatID:  chatID,
-			message: fmt.Sprintf("don't know abt timezone '%s'. Try something easier, like Europe/Kiev", args),
+			message: fmt.Sprintf("don't know abt timezone '%v'. Try something easier, like Europe/Kiev", args),
 		}
 	} else {
-		log.Printf("Changing %d's timezone to %s", chatID, args)
-
+		log.Printf("Changing %d's timezone to %v", chatID, args)
 		bc.modifyLock.Lock()
+		shouldNotify := bc.chatIDs[chatID].shouldSendReminder
 		bc.deleteJobUnsafe(chatID)
-		bc.makeJobsUnsafe(chatID, args)
+		bc.makeJobsUnsafe(chatID, args, shouldNotify)
 		bc.modifyLock.Unlock()
 
 		insertStmt(bc.db, chatID, args, "whatever")
 
 		bc.sendingChan <- BotMessage{
 			chatID:  chatID,
-			message: fmt.Sprintf("OK: changed timezone to %s", args),
+			message: fmt.Sprintf("OK: changed timezone to %v", args),
 		}
 	}
 }
@@ -266,14 +298,14 @@ func (msgsPool ConstMessageGenerator) Get() string {
 	return string(msgsPool)
 }
 
-func (bc *BotConfig) makeJobsUnsafe(chatID int64, timezone string) {
+func (bc *BotConfig) makeJobsUnsafe(chatID int64, timezone string, shouldNotify bool) {
 	_, ok := bc.chatIDs[chatID]
 	if ok {
 		log.Printf("%d is already registered. Skipping", chatID)
 		return
 	}
 
-	bc.addJobsUnsafe(timezone, chatID)
+	bc.addJobsUnsafe(timezone, chatID, shouldNotify)
 }
 
 func (bc *BotConfig) registerChat(timezone string, chatID int64) {
@@ -282,13 +314,13 @@ func (bc *BotConfig) registerChat(timezone string, chatID int64) {
 }
 
 func addCronFunc(c *cron.Cron, timezone, frame string, job func()) {
-	c.AddFunc(fmt.Sprintf("CRON_TZ=%s %s", timezone, frame), job)
+	c.AddFunc(fmt.Sprintf("CRON_TZ=%v %v", timezone, frame), job)
 }
 
-func (bc *BotConfig) addJobsUnsafe(timezone string, chatID int64) {
+func (bc *BotConfig) addJobsUnsafe(timezone string, chatID int64, shouldNotify bool) {
 	_, ok := bc.timeZones[timezone]
 	if !ok {
-		log.Printf("Creating new cron instance for timezone %s", timezone)
+		log.Printf("Creating new cron instance for timezone %v", timezone)
 		timeZoneCron := cron.New()
 		conf := TimeZoneConfig{cron: timeZoneCron, chats: make(map[int64]bool)}
 		bc.timeZones[timezone] = &conf
@@ -315,7 +347,7 @@ func (bc *BotConfig) addJobsUnsafe(timezone string, chatID int64) {
 		}
 		timeZoneCron.Start()
 	}
-	bc.chatIDs[chatID] = &ChatConfig{shouldSendReminder: true, timezone: timezone}
+	bc.chatIDs[chatID] = &ChatConfig{shouldSendReminder: shouldNotify, timezone: timezone}
 	bc.registerChat(timezone, chatID)
 
 }
