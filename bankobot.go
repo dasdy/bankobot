@@ -27,12 +27,6 @@ type BankoBotInterface interface {
 	sendMessage(m BotMessage)
 }
 
-type JobMaker interface {
-	remindJob() func()
-	timeZoneJob(timezone string, job func(int64)) func()
-	resetJob() func()
-}
-
 func (cc *BotConfig) sendMessage(m BotMessage) {
 	cc.messager.sendMessage(m)
 }
@@ -126,7 +120,6 @@ func (bc *BotConfig) addJobsUnsafe(timezone string, chatID int64, shouldNotify b
 	log.Printf("Registering chat %d", chatID)
 	bc.chatIDs[chatID] = &ChatConfig{shouldSendReminder: shouldNotify, timezone: timezone}
 	bc.registerChat(timezone, chatID)
-
 }
 
 func (bc *BotConfig) deleteJobUnsafe(chatID int64) {

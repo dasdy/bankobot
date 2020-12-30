@@ -31,7 +31,7 @@ type MockRowReader struct {
 	tz, timestamp string
 }
 
-func (r MockRowReader) LoadRow(a *int64, b *string, c *string, d *string) error {
+func (r MockRowReader) LoadRow(a *int64, b, c, d *string) error {
 	*a = r.id
 	*b = r.tz
 	*c = "some message lol"
@@ -45,7 +45,6 @@ func TestJobTaskFromRow(t *testing.T) {
 	ID, tz, shouldSendReminder := jobTaskFromRow(reader, now)
 
 	if ID != 10 || tz != "sometimezone" || shouldSendReminder != true {
-
 		t.Error(ID, tz, shouldSendReminder)
 	}
 }

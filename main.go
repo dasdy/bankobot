@@ -38,8 +38,7 @@ func initSqliteDb() *sql.DB {
 	return db
 }
 
-func insertStmt(db *sql.DB, chatID int64, timezone string, message string) {
-
+func insertStmt(db *sql.DB, chatID int64, timezone, message string) {
 	tx, err := db.Begin()
 	if err != nil {
 		log.Fatal(err)
@@ -58,14 +57,12 @@ func insertStmt(db *sql.DB, chatID int64, timezone string, message string) {
 }
 
 func refreshTimestamp(db *sql.DB) {
-
 	tx, err := db.Begin()
 	if err != nil {
 		log.Fatal(err)
 	}
 
 	stmt, err := tx.Prepare(`update foo set last_timestamp=datetime('now')`)
-
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -120,7 +117,6 @@ func (cc *TimeZoneConfig) String() string {
 func ShouldSendReminder(lastTimestamp string, now time.Time) bool {
 	const layout string = "2006-01-02 15:04:05"
 	timestamp, err := time.Parse(layout, lastTimestamp)
-
 	if err != nil {
 		return true
 	}
@@ -144,7 +140,7 @@ type SqlRowReader struct {
 	DbRows *sql.Rows
 }
 
-func (r SqlRowReader) LoadRow(a *int64, b *string, c *string, d *string) error {
+func (r SqlRowReader) LoadRow(a *int64, b, c, d *string) error {
 	return r.DbRows.Scan(a, b, c, d)
 }
 
@@ -264,7 +260,6 @@ func botLoop(db *sql.DB) {
 		case "settz":
 			worker.commandCh <- ChangeTimezoneCommand{chatID: update.Message.Chat.ID, timezone: update.Message.CommandArguments()}
 		}
-
 	}
 }
 
@@ -319,8 +314,10 @@ type MessageGenerator interface {
 	Get() string
 }
 
-type ChanMessageGenerator chan string
-type ConstMessageGenerator string
+type (
+	ChanMessageGenerator  chan string
+	ConstMessageGenerator string
+)
 
 func (msgsPool ChanMessageGenerator) Get() string {
 	return <-msgsPool
