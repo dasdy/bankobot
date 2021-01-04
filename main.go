@@ -10,6 +10,7 @@ import (
 	"time"
 
 	tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api"
+	"github.com/joho/godotenv"
 	_ "github.com/mattn/go-sqlite3"
 	"github.com/robfig/cron"
 )
@@ -361,6 +362,10 @@ func linesGenerator(fname string, out chan string) {
 }
 
 func main() {
+	err := godotenv.Load()
+	if err != nil {
+		log.Fatal("Error loading .env file")
+	}
 	rand.Seed(time.Now().UnixNano())
 	db := initSqliteDb()
 	defer db.Close()
