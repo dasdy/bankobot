@@ -31,4 +31,4 @@ jobs:
         with:
           version: v1.34
           working-directory: .
-          only-new-issues: true
+#           only-new-issues: true
