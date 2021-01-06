@@ -30,3 +30,5 @@ jobs:
         uses: golangci/golangci-lint-action@v2
         with:
           version: v1.34
+          working-directory: .
+          only-new-issues: true
