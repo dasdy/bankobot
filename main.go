@@ -7,6 +7,7 @@ import (
 	"log"
 	"math/rand"
 	"os"
+	"strings"
 	"time"
 
 	tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api"
@@ -255,11 +256,14 @@ func botLoop(db *sql.DB) {
 
 		worker.commandCh <- InsertCommand{chatID: update.Message.Chat.ID, timezone: "Europe/Kiev"}
 
-		switch update.Message.Command() {
-		case "pidor":
+		command := update.Message.Command()
+
+		if strings.HasPrefix(command, "pidor") {
 			worker.commandCh <- NotifyReceivedCommand{update.Message.Chat.ID}
-		case "settz":
-			worker.commandCh <- ChangeTimezoneCommand{chatID: update.Message.Chat.ID, timezone: update.Message.CommandArguments()}
+		} else {
+			if strings.HasPrefix(command, "settz") {
+				worker.commandCh <- ChangeTimezoneCommand{chatID: update.Message.Chat.ID, timezone: update.Message.CommandArguments()}
+			}
 		}
 	}
 }
