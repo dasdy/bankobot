@@ -22,7 +22,7 @@ type BotMessage struct {
 	isSticker bool
 }
 
-func initSqliteDb() *sql.DB {
+func initSqliteDB() *sql.DB {
 	db, err := sql.Open("sqlite3", "./foo.db")
 	if err != nil {
 		log.Fatal(err)
@@ -32,6 +32,7 @@ func initSqliteDb() *sql.DB {
 	create table foo (chat_id int not null primary key, tz text not null, last_imtestamp text);
 	delete from foo;
 	`
+
 	_, err = db.Exec(sqlStmt)
 	if err != nil {
 		log.Printf("%q: %v\n", err, sqlStmt)
@@ -45,17 +46,24 @@ func insertStmt(db *sql.DB, chatID int64, timezone, message string) {
 	if err != nil {
 		log.Fatal(err)
 	}
+
 	stmt, err := tx.Prepare(`insert into foo(chat_id, tz, message, last_timestamp) values(?, ?, ?, datetime('now'))
 	on conflict(chat_id) do update set tz=excluded.tz, message=excluded.message, last_timestamp=excluded.last_timestamp`)
 	if err != nil {
 		log.Fatal(err)
 	}
+
 	defer stmt.Close()
+
 	_, err = stmt.Exec(chatID, timezone, message)
 	if err != nil {
 		log.Printf("%q: %d, %v\n", err, chatID, timezone)
 	}
-	tx.Commit()
+
+	err = tx.Commit()
+	if err != nil {
+		log.Printf("%q: %d, %v\n", err, chatID, timezone)
+	}
 }
 
 func refreshTimestamp(db *sql.DB) {
@@ -77,10 +85,13 @@ func refreshTimestamp(db *sql.DB) {
 		log.Printf("%v\n", err)
 	}
 
-	tx.Commit()
+	err = tx.Commit()
+	if err != nil {
+		log.Printf("%v\n", err)
+	}
 }
 
-var DEBUG = false
+var DEBUG = false //nolint
 
 type Messager struct {
 	api *tgbotapi.BotAPI
@@ -88,14 +99,20 @@ type Messager struct {
 
 func (m *Messager) sendMessage(msg BotMessage) {
 	log.Printf("Got a message request!")
+
 	var botMsg tgbotapi.Chattable
+
 	if msg.isSticker {
 		botMsg = tgbotapi.NewStickerShare(msg.chatID, msg.message)
 	} else {
 		botMsg = tgbotapi.NewMessage(msg.chatID, msg.message)
 	}
+
 	log.Printf("Sending a message: %#v", botMsg)
-	m.api.Send(botMsg)
+
+	if _, err := m.api.Send(botMsg); err != nil {
+		log.Printf("%v\n", err)
+	}
 }
 
 type ChatConfig struct {
@@ -118,15 +135,16 @@ func (cc *TimeZoneConfig) String() string {
 
 func ShouldSendReminder(lastTimestamp string, now time.Time) bool {
 	const layout string = "2006-01-02 15:04:05"
+
 	timestamp, err := time.Parse(layout, lastTimestamp)
 	if err != nil {
 		return true
 	}
 
 	shouldSendReminder := false
-
 	y1, m1, d1 := now.Date()
 	y2, m2, d2 := timestamp.Date()
+
 	if d1 != d2 || m1 != m2 || y1 != y2 {
 		shouldSendReminder = true
 	}
@@ -138,23 +156,28 @@ type RowReader interface {
 	LoadRow(*int64, *string, *string, *string) error
 }
 
-type SqlRowReader struct {
-	DbRows *sql.Rows
+type SQLRowReader struct {
+	DBRows *sql.Rows
 }
 
-func (r SqlRowReader) LoadRow(a *int64, b, c, d *string) error {
-	return r.DbRows.Scan(a, b, c, d)
+func (r SQLRowReader) LoadRow(a *int64, b, c, d *string) error {
+	if err := r.DBRows.Scan(a, b, c, d); err != nil {
+		return fmt.Errorf("failed to load row: %w", err)
+	}
+
+	return nil
 }
 
-func jobTaskFromRow(row RowReader, now time.Time) (int64, string, bool) {
+func JobTaskFromRow(row RowReader, now time.Time) (int64, string, bool) {
 	var ID int64
-	var tz string
-	var message string
-	var lastTimestamp string
+
+	var tz, lastTimestamp, message string
+
 	err := row.LoadRow(&ID, &tz, &message, &lastTimestamp)
 	if err != nil {
 		log.Fatal(err)
 	}
+
 	log.Printf("Row: %v,%v,%v,%v", ID, tz, message, lastTimestamp)
 
 	shouldSendReminder := ShouldSendReminder(lastTimestamp, now)
@@ -166,7 +189,6 @@ func initBot(db *sql.DB, bot *tgbotapi.BotAPI) *BotConfig {
 	chatIDs := make(map[int64]*ChatConfig)
 	timezones := make(map[string]*TimeZoneConfig)
 	c := cron.New()
-
 	regMsg := make(chan string)
 	wedMsg := make(chan string)
 
@@ -177,6 +199,7 @@ func initBot(db *sql.DB, bot *tgbotapi.BotAPI) *BotConfig {
 	if err != nil {
 		log.Fatal(err)
 	}
+
 	defer rows.Close()
 
 	bc := BotConfig{
@@ -189,38 +212,56 @@ func initBot(db *sql.DB, bot *tgbotapi.BotAPI) *BotConfig {
 		messager:      Messager{api: bot},
 		notifyChannel: make(chan Command),
 	}
-
 	now := time.Now()
-	reader := SqlRowReader{DbRows: rows}
+	reader := SQLRowReader{DBRows: rows}
+
 	for rows.Next() {
-		ID, tz, shouldSendReminder := jobTaskFromRow(reader, now)
+		ID, tz, shouldSendReminder := JobTaskFromRow(reader, now)
 
 		bc.makeJobsUnsafe(ID, tz, shouldSendReminder)
 	}
-	err = rows.Err()
-	if err != nil {
-		log.Fatal(err)
-	}
 
-	c.AddFunc("CRON_TZ=Europe/Kiev 30 23 * * *", bc.resetJob())
-	c.AddFunc("CRON_TZ=Europe/Kiev 0 23 * * *", bc.remindJob(db))
-
-	if DEBUG {
-		c.AddFunc("CRON_TZ=Europe/Kiev */10 * * * *", bc.resetJob())
-		c.AddFunc("CRON_TZ=Europe/Kiev */2 * * * *", bc.remindJob(db))
-	}
-
+	setupCronTasks(rows, &bc, db, c)
 	c.Start()
 
 	return &bc
 }
 
-func tgbotApiKey() string {
+func setupCronTasks(rows *sql.Rows, bc *BotConfig, db *sql.DB, c *cron.Cron) {
+	err := rows.Err()
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	err = c.AddFunc("CRON_TZ=Europe/Kiev 30 23 * * *", bc.resetJob())
+	if err != nil {
+		log.Fatalf("%v\n", err)
+	}
+
+	err = c.AddFunc("CRON_TZ=Europe/Kiev 0 23 * * *", bc.remindJob(db))
+	if err != nil {
+		log.Fatalf("%v\n", err)
+	}
+
+	if DEBUG {
+		err = c.AddFunc("CRON_TZ=Europe/Kiev */10 * * * *", bc.resetJob())
+		if err != nil {
+			log.Fatalf("%v\n", err)
+		}
+
+		err = c.AddFunc("CRON_TZ=Europe/Kiev */2 * * * *", bc.remindJob(db))
+		if err != nil {
+			log.Fatalf("%v\n", err)
+		}
+	}
+}
+
+func tgbotAPIKey() string {
 	return os.Getenv("TG_API_KEY")
 }
 
 func initBotConfig(db *sql.DB) (*tgbotapi.UpdatesChannel, *BotConfig) {
-	bot, err := tgbotapi.NewBotAPI(tgbotApiKey())
+	bot, err := tgbotapi.NewBotAPI(tgbotAPIKey())
 	if err != nil {
 		log.Panic(err)
 	}
@@ -233,6 +274,9 @@ func initBotConfig(db *sql.DB) (*tgbotapi.UpdatesChannel, *BotConfig) {
 	u.Timeout = 600
 
 	updates, err := bot.GetUpdatesChan(u)
+	if err != nil {
+		log.Panic(err)
+	}
 
 	return &updates, initBot(db, bot)
 }
@@ -260,10 +304,11 @@ func botLoop(db *sql.DB) {
 
 		if strings.HasPrefix(command, "pidor") {
 			worker.commandCh <- NotifyReceivedCommand{update.Message.Chat.ID}
-		} else {
-			if strings.HasPrefix(command, "settz") {
-				worker.commandCh <- ChangeTimezoneCommand{chatID: update.Message.Chat.ID, timezone: update.Message.CommandArguments()}
+		} else if strings.HasPrefix(command, "settz") {
+			command := ChangeTimezoneCommand{
+				chatID: update.Message.Chat.ID, timezone: update.Message.CommandArguments(),
 			}
+			worker.commandCh <- command
 		}
 	}
 }
@@ -309,6 +354,7 @@ type Worker struct {
 
 func (w *Worker) botConfigWorker() {
 	log.Printf("Starting worker job.")
+
 	for c := range w.commandCh {
 		log.Printf("Got a job: %#v", c)
 		c.Do(w.botConfig, w.db)
@@ -333,22 +379,33 @@ func (msgsPool ConstMessageGenerator) Get() string {
 }
 
 func addCronFunc(c *cron.Cron, timezone, frame string, job func()) {
-	c.AddFunc(fmt.Sprintf("CRON_TZ=%v %v", timezone, frame), job)
+	err := c.AddFunc(fmt.Sprintf("CRON_TZ=%v %v", timezone, frame), job)
+	if err != nil {
+		log.Fatalf("Could not add cron func: %v, frame: %s", err, frame)
+	}
 }
 
 func readLines(fname string) ([]string, error) {
 	file, err := os.Open(fname)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("could not read contents of %v, got %w", fname, err)
 	}
+
 	defer file.Close()
 
 	var lines []string
+
 	scanner := bufio.NewScanner(file)
 	for scanner.Scan() {
 		lines = append(lines, scanner.Text())
 	}
-	return lines, scanner.Err()
+
+	err = scanner.Err()
+	if err != nil {
+		err = fmt.Errorf("error while reading file %v, got %w", fname, err)
+	}
+
+	return lines, err
 }
 
 func linesGenerator(fname string, out chan string) {
@@ -357,6 +414,7 @@ func linesGenerator(fname string, out chan string) {
 		if err != nil {
 			out <- "https://www.youtube.com/watch?v=-5qmvsZr0F8"
 		}
+
 		rand.Shuffle(len(lines), func(i, j int) { lines[i], lines[j] = lines[j], lines[i] })
 
 		for _, l := range lines {
@@ -365,13 +423,18 @@ func linesGenerator(fname string, out chan string) {
 	}
 }
 
-func main() {
-	err := godotenv.Load()
-	if err != nil {
+func loadEnv() {
+	if err := godotenv.Load(); err != nil {
 		log.Fatal("Error loading .env file")
 	}
+}
+
+func main() {
+	loadEnv()
 	rand.Seed(time.Now().UnixNano())
-	db := initSqliteDb()
+
+	db := initSqliteDB()
+
 	defer db.Close()
 	botLoop(db)
 }

@@ -27,12 +27,12 @@ type BankoBotInterface interface {
 	sendMessage(m BotMessage)
 }
 
-func (cc *BotConfig) sendMessage(m BotMessage) {
-	cc.messager.sendMessage(m)
+func (bc *BotConfig) sendMessage(m BotMessage) {
+	bc.messager.sendMessage(m)
 }
 
-func (cc *BotConfig) String() string {
-	return fmt.Sprintf("BotConfig{%v, %v}", cc.chatIDs, cc.timeZones)
+func (bc *BotConfig) String() string {
+	return fmt.Sprintf("BotConfig{%v, %v}", bc.chatIDs, bc.timeZones)
 }
 
 func (bc *BotConfig) addNewChat(db *sql.DB, chatID int64) {
@@ -46,10 +46,16 @@ func (bc *BotConfig) addNewChat(db *sql.DB, chatID int64) {
 func (bc *BotConfig) notifyPidorAccepted(chatID int64) {
 	log.Printf("Detected /pidor command at %d. All chat ids:", chatID)
 	log.Println(bc.chatIDs)
+
 	v := bc.chatIDs[chatID]
 	if v.shouldSendReminder {
 		v.shouldSendReminder = false
-		bc.messager.sendMessage(BotMessage{chatID: chatID, message: "CAACAgIAAxkBAAIBq1_I9VKJwdOKaGlg7VrGfj2-9gHlAAIeAQAC0t1pBceuDjBghrA8HgQ", isSticker: true})
+		message := BotMessage{
+			chatID:    chatID,
+			message:   "CAACAgIAAxkBAAIBq1_I9VKJwdOKaGlg7VrGfj2-9gHlAAIeAQAC0t1pBceuDjBghrA8HgQ",
+			isSticker: true,
+		}
+		bc.messager.sendMessage(message)
 	} else {
 		log.Println("already remembered this chat id")
 	}
@@ -74,9 +80,9 @@ func (bc *BotConfig) setTimezone(chatID int64, timezone string) {
 }
 
 func (bc *BotConfig) makeJobsUnsafe(chatID int64, timezone string, shouldNotify bool) {
-	_, ok := bc.chatIDs[chatID]
-	if ok {
+	if _, ok := bc.chatIDs[chatID]; ok {
 		log.Printf("%d is already registered. Skipping", chatID)
+
 		return
 	}
 
@@ -92,20 +98,20 @@ func (bc *BotConfig) addJobsUnsafe(timezone string, chatID int64, shouldNotify b
 	_, ok := bc.timeZones[timezone]
 	if !ok {
 		log.Printf("Creating new cron instance for timezone %v", timezone)
+
 		timeZoneCron := cron.New()
 		conf := TimeZoneConfig{cron: timeZoneCron, chats: make(map[int64]bool)}
+
 		bc.timeZones[timezone] = &conf
 
 		regMsgGen := ChanMessageGenerator(bc.regMsg)
-
 		regularJob := bc.timeZoneJob(timezone, func(chatId int64) {
 			log.Printf("A regular job started: sending message to %v", chatId)
-			bc.notifyChannel <- NotifyCommand{chatID: chatId, message: regMsgGen.Get()}
+			bc.notifyChannel <- NotifyCommand{chatID: chatId, message: regMsgGen.Get(), isSticker: false}
 		})
-
 		wedMsgGen := ChanMessageGenerator(bc.wedMsg)
 		wednesdayJob := bc.timeZoneJob(timezone, func(chatId int64) {
-			bc.notifyChannel <- NotifyCommand{chatID: chatId, message: wedMsgGen.Get()}
+			bc.notifyChannel <- NotifyCommand{chatID: chatId, message: wedMsgGen.Get(), isSticker: false}
 		})
 
 		addCronFunc(timeZoneCron, timezone, "20 4 * * *", regularJob)
@@ -115,16 +121,21 @@ func (bc *BotConfig) addJobsUnsafe(timezone string, chatID int64, shouldNotify b
 		if DEBUG {
 			addCronFunc(timeZoneCron, timezone, "* * * * *", regularJob)
 		}
+
 		timeZoneCron.Start()
 	}
+
 	log.Printf("Registering chat %d", chatID)
+
 	bc.chatIDs[chatID] = &ChatConfig{shouldSendReminder: shouldNotify, timezone: timezone}
+
 	bc.registerChat(timezone, chatID)
 }
 
 func (bc *BotConfig) deleteJobUnsafe(chatID int64) {
 	chatConf := bc.chatIDs[chatID]
 	v := bc.timeZones[chatConf.timezone]
+
 	delete(v.chats, chatID)
 	delete(bc.chatIDs, chatID)
 }
@@ -140,7 +151,9 @@ func (bc *BotConfig) timeZoneJob(timezone string, job func(int64)) func() {
 
 func (bc *BotConfig) sendText(chatID int64, message MessageGenerator) {
 	log.Printf("messaging to %d", chatID)
+
 	msg := message.Get()
+
 	bc.sendMessage(BotMessage{message: msg, chatID: chatID, isSticker: false})
 }
 
@@ -151,6 +164,7 @@ func (bc *BotConfig) remindJob(db *sql.DB) func() {
 			if x.shouldSendReminder {
 				bc.sendText(k, ConstMessageGenerator("This is a reminder to call /pidor"))
 			}
+
 			log.Printf("Resetting item %d", k)
 		}
 
@@ -163,6 +177,7 @@ func (bc *BotConfig) resetJob() func() {
 		for k := range bc.chatIDs {
 			x := bc.chatIDs[k]
 			x.shouldSendReminder = true
+
 			log.Printf("Resetting item %d", k)
 		}
 	}
