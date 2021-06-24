@@ -1,7 +1,6 @@
 package main
 
 import (
-	"database/sql"
 	"fmt"
 	"log"
 	"time"
@@ -10,21 +9,28 @@ import (
 )
 
 type BotConfig struct {
-	db             *sql.DB
+	db             SQLConnection
 	regMsg, wedMsg chan string
 	notifyChannel  chan Command
 	chatIDs        map[int64]*ChatConfig
 	timeZones      map[string]*TimeZoneConfig
-	cron           *cron.Cron
+	cron           CronRepo
 	messager       Messager
 }
 
 type BankoBotInterface interface {
-	addNewChat(db *sql.DB, chatID int64)
+	addNewChat(db SQLConnection, chatID int64)
 	notifyPidorAccepted(chatID int64)
 	setTimezone(chatID int64, timezone string)
 	sendText(chatID int64, message MessageGenerator)
 	sendMessage(m BotMessage)
+	commandChannel() chan Command
+	resetJob() func()
+	remindJob(db SQLConnection) func()
+}
+
+func (bc *BotConfig) commandChannel() chan Command {
+	return bc.notifyChannel
 }
 
 func (bc *BotConfig) sendMessage(m BotMessage) {
@@ -35,7 +41,7 @@ func (bc *BotConfig) String() string {
 	return fmt.Sprintf("BotConfig{%v, %v}", bc.chatIDs, bc.timeZones)
 }
 
-func (bc *BotConfig) addNewChat(db *sql.DB, chatID int64) {
+func (bc *BotConfig) addNewChat(db SQLConnection, chatID int64) {
 	_, ok := bc.chatIDs[chatID]
 	if !ok {
 		bc.makeJobsUnsafe(chatID, "Europe/Kiev", true)
@@ -157,11 +163,11 @@ func (bc *BotConfig) sendText(chatID int64, message MessageGenerator) {
 	bc.sendMessage(BotMessage{message: msg, chatID: chatID, isSticker: false})
 }
 
-func (bc *BotConfig) remindJob(db *sql.DB) func() {
+func (bc *BotConfig) remindJob(db SQLConnection) func() {
 	return func() {
 		for k := range bc.chatIDs {
-			x := bc.chatIDs[k]
-			if x.shouldSendReminder {
+			chatID := bc.chatIDs[k]
+			if chatID.shouldSendReminder {
 				bc.sendText(k, ConstMessageGenerator("This is a reminder to call /pidor"))
 			}
 

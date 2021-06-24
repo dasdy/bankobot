@@ -41,51 +41,28 @@ func initSqliteDB() *sql.DB {
 	return db
 }
 
-func insertStmt(db *sql.DB, chatID int64, timezone, message string) {
-	tx, err := db.Begin()
-	if err != nil {
-		log.Fatal(err)
-	}
+type SQLConnection interface {
+	Exec(query string, args ...interface{}) (sql.Result, error)
+	Query(query string, args ...interface{}) (*sql.Rows, error)
+}
 
-	stmt, err := tx.Prepare(`insert into foo(chat_id, tz, message, last_timestamp) values(?, ?, ?, datetime('now'))
-	on conflict(chat_id) do update set tz=excluded.tz, message=excluded.message, last_timestamp=excluded.last_timestamp`)
-	if err != nil {
-		log.Fatal(err)
-	}
+type TelegramAPI interface {
+	Send(c tgbotapi.Chattable) (tgbotapi.Message, error)
+}
 
-	defer stmt.Close()
-
-	_, err = stmt.Exec(chatID, timezone, message)
+func insertStmt(db SQLConnection, chatID int64, timezone, message string) {
+	_, err := db.Exec(`insert into foo(chat_id, tz, message, last_timestamp) 
+	    values(?, ?, ?, datetime('now'))
+		on conflict(chat_id) 
+		do update set tz=excluded.tz, message=excluded.message, last_timestamp=excluded.last_timestamp`,
+		chatID, timezone, message)
 	if err != nil {
-		log.Printf("%q: %d, %v\n", err, chatID, timezone)
-	}
-
-	err = tx.Commit()
-	if err != nil {
-		log.Printf("%q: %d, %v\n", err, chatID, timezone)
+		log.Fatalf("%q: %d, %v\n", err, chatID, timezone)
 	}
 }
 
-func refreshTimestamp(db *sql.DB) {
-	tx, err := db.Begin()
-	if err != nil {
-		log.Fatal(err)
-	}
-
-	stmt, err := tx.Prepare(`update foo set last_timestamp=datetime('now')`)
-	if err != nil {
-		log.Fatal(err)
-	}
-
-	defer stmt.Close()
-
-	_, err = stmt.Exec()
-
-	if err != nil {
-		log.Printf("%v\n", err)
-	}
-
-	err = tx.Commit()
+func refreshTimestamp(db SQLConnection) {
+	_, err := db.Exec(`update foo set last_timestamp=datetime('now')`)
 	if err != nil {
 		log.Printf("%v\n", err)
 	}
@@ -94,7 +71,7 @@ func refreshTimestamp(db *sql.DB) {
 var DEBUG = false //nolint
 
 type Messager struct {
-	api *tgbotapi.BotAPI
+	api TelegramAPI
 }
 
 func (m *Messager) sendMessage(msg BotMessage) {
@@ -125,7 +102,7 @@ func (cc *ChatConfig) String() string {
 }
 
 type TimeZoneConfig struct {
-	cron  *cron.Cron
+	cron  CronRepo
 	chats map[int64]bool
 }
 
@@ -185,7 +162,7 @@ func JobTaskFromRow(row RowReader, now time.Time) (int64, string, bool) {
 	return ID, tz, shouldSendReminder
 }
 
-func initBot(db *sql.DB, bot *tgbotapi.BotAPI) *BotConfig {
+func initBot(db SQLConnection, bot TelegramAPI) BankoBotInterface {
 	chatIDs := make(map[int64]*ChatConfig)
 	timezones := make(map[string]*TimeZoneConfig)
 	c := cron.New()
@@ -221,19 +198,19 @@ func initBot(db *sql.DB, bot *tgbotapi.BotAPI) *BotConfig {
 		bc.makeJobsUnsafe(ID, tz, shouldSendReminder)
 	}
 
-	setupCronTasks(rows, &bc, db, c)
+	err = rows.Err()
+	if err != nil {
+		log.Printf("%v", err) // TODO probably should fail here.
+	}
+
+	setupCronTasks(&bc, db, c)
 	c.Start()
 
 	return &bc
 }
 
-func setupCronTasks(rows *sql.Rows, bc *BotConfig, db *sql.DB, c *cron.Cron) {
-	err := rows.Err()
-	if err != nil {
-		log.Fatal(err)
-	}
-
-	err = c.AddFunc("CRON_TZ=Europe/Kiev 30 23 * * *", bc.resetJob())
+func setupCronTasks(bc BankoBotInterface, db SQLConnection, c CronRepo) {
+	err := c.AddFunc("CRON_TZ=Europe/Kiev 30 23 * * *", bc.resetJob())
 	if err != nil {
 		log.Fatalf("%v\n", err)
 	}
@@ -260,7 +237,7 @@ func tgbotAPIKey() string {
 	return os.Getenv("TG_API_KEY")
 }
 
-func initBotConfig(db *sql.DB) (*tgbotapi.UpdatesChannel, *BotConfig) {
+func initBotConfig(db SQLConnection) (*tgbotapi.UpdatesChannel, BankoBotInterface) {
 	bot, err := tgbotapi.NewBotAPI(tgbotAPIKey())
 	if err != nil {
 		log.Panic(err)
@@ -281,10 +258,10 @@ func initBotConfig(db *sql.DB) (*tgbotapi.UpdatesChannel, *BotConfig) {
 	return &updates, initBot(db, bot)
 }
 
-func botLoop(db *sql.DB) {
+func botLoop(db SQLConnection) {
 	updates, botConfig := initBotConfig(db)
 	worker := Worker{
-		commandCh: botConfig.notifyChannel,
+		commandCh: botConfig.commandChannel(),
 		botConfig: botConfig,
 		db:        db,
 	}
@@ -318,13 +295,13 @@ type InsertCommand struct {
 	timezone string
 }
 
-func (c InsertCommand) Do(botConfig BankoBotInterface, db *sql.DB) {
+func (c InsertCommand) Do(botConfig BankoBotInterface, db SQLConnection) {
 	botConfig.addNewChat(db, c.chatID)
 }
 
 type NotifyCommand BotMessage
 
-func (c NotifyCommand) Do(botConfig BankoBotInterface, db *sql.DB) {
+func (c NotifyCommand) Do(botConfig BankoBotInterface, db SQLConnection) {
 	botConfig.sendMessage(BotMessage(c))
 }
 
@@ -332,24 +309,24 @@ type NotifyReceivedCommand struct {
 	chatID int64
 }
 
-func (c NotifyReceivedCommand) Do(botConfig BankoBotInterface, db *sql.DB) {
+func (c NotifyReceivedCommand) Do(botConfig BankoBotInterface, db SQLConnection) {
 	botConfig.notifyPidorAccepted(c.chatID)
 }
 
-func (c ChangeTimezoneCommand) Do(botConfig BankoBotInterface, db *sql.DB) {
+func (c ChangeTimezoneCommand) Do(botConfig BankoBotInterface, db SQLConnection) {
 	botConfig.setTimezone(c.chatID, c.timezone)
 }
 
 type ChangeTimezoneCommand InsertCommand
 
 type Command interface {
-	Do(botConfig BankoBotInterface, db *sql.DB)
+	Do(botConfig BankoBotInterface, db SQLConnection)
 }
 
 type Worker struct {
 	commandCh chan Command
 	botConfig BankoBotInterface
-	db        *sql.DB
+	db        SQLConnection
 }
 
 func (w *Worker) botConfigWorker() {
@@ -378,7 +355,11 @@ func (msgsPool ConstMessageGenerator) Get() string {
 	return string(msgsPool)
 }
 
-func addCronFunc(c *cron.Cron, timezone, frame string, job func()) {
+type CronRepo interface {
+	AddFunc(spec string, cmd func()) error
+}
+
+func addCronFunc(c CronRepo, timezone, frame string, job func()) {
 	err := c.AddFunc(fmt.Sprintf("CRON_TZ=%v %v", timezone, frame), job)
 	if err != nil {
 		log.Fatalf("Could not add cron func: %v, frame: %s", err, frame)
