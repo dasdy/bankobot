@@ -71,7 +71,7 @@ func refreshTimestamp(db SQLConnection) {
 var DEBUG = false //nolint
 
 type Messager struct {
-	Api TelegramAPI
+	API TelegramAPI
 }
 
 func (m *Messager) SendMessage(msg BotMessage) {
@@ -87,7 +87,7 @@ func (m *Messager) SendMessage(msg BotMessage) {
 
 	log.Printf("Sending a message: %#v", botMsg)
 
-	if _, err := m.Api.Send(botMsg); err != nil {
+	if _, err := m.API.Send(botMsg); err != nil {
 		log.Printf("%v\n", err)
 	}
 }
@@ -186,7 +186,7 @@ func initBot(db SQLConnection, bot TelegramAPI) BankoBotInterface {
 		WednesdayMessages: wedMsg,
 		ChatIDs:           chatIDs,
 		TimeZones:         timezones,
-		Messager:          Messager{Api: bot},
+		Messager:          Messager{API: bot},
 		NotifyChannel:     make(chan Command),
 	}
 	now := time.Now()
@@ -200,7 +200,7 @@ func initBot(db SQLConnection, bot TelegramAPI) BankoBotInterface {
 
 	err = rows.Err()
 	if err != nil {
-		log.Printf("%v", err) // TODO probably should fail fatal error here.
+		log.Printf("%v", err)
 	}
 
 	setupCronTasks(&bc, db, c)

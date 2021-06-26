@@ -62,20 +62,20 @@ func TestJobTaskFromRow(t *testing.T) {
 	}
 }
 
-type TgApiMock struct {
+type TgAPIMock struct {
 	chattableLog []tgbotapi.Chattable
 }
 
-func (api *TgApiMock) Send(c tgbotapi.Chattable) (tgbotapi.Message, error) {
+func (api *TgAPIMock) Send(c tgbotapi.Chattable) (tgbotapi.Message, error) {
 	api.chattableLog = append(api.chattableLog, c)
-	return tgbotapi.Message{}, nil
+	return tgbotapi.Message{}, nil //nolint
 }
 
 func TestSendMessageToApi(t *testing.T) {
 	t.Parallel()
 
-	api := TgApiMock{}
-	messager := main.Messager{Api: &api}
+	api := TgAPIMock{chattableLog: make([]tgbotapi.Chattable, 0, 1)}
+	messager := main.Messager{API: &api}
 
 	messager.SendMessage(main.BotMessage{ChatID: 100, Message: "some test message", IsSticker: false})
 
@@ -89,38 +89,47 @@ func TestSendMessageToApi(t *testing.T) {
 	}
 }
 
-type SqlConnectionMock struct{}
+type SQLConnectionMock struct{}
 
-func (s SqlConnectionMock) Exec(query string, args ...interface{}) (sql.Result, error) {
+func (s SQLConnectionMock) Exec(query string, args ...interface{}) (sql.Result, error) {
 	return nil, nil
 }
-func (s SqlConnectionMock) Query(query string, args ...interface{}) (*sql.Rows, error) {
+
+func (s SQLConnectionMock) Query(query string, args ...interface{}) (*sql.Rows, error) {
 	return nil, nil
 }
 
 func TestBroadcastMessages(t *testing.T) {
 	t.Parallel()
 
-	api := TgApiMock{}
-	messager := main.Messager{Api: &api}
-	bc := main.BotConfig{Messager: messager, ChatIDs: map[int64]*main.ChatConfig{
+	api := TgAPIMock{chattableLog: make([]tgbotapi.Chattable, 0, 3)}
+	messager := main.Messager{API: &api}
+	bc := main.BotConfig{Messager: messager, ChatIDs: map[int64]*main.ChatConfig{ // nolint
 		100: {ShouldSendReminder: true},
 		200: {ShouldSendReminder: false},
 		300: {ShouldSendReminder: true},
 	}}
 
-	bc.RemindJob(SqlConnectionMock{})()
+	bc.RemindJob(SQLConnectionMock{})()
 
 	if len(api.chattableLog) != 2 {
 		t.Errorf("Got wrong amt of items: %v", len(api.chattableLog))
 	}
 
-	v := api.chattableLog[0].(tgbotapi.MessageConfig)
+	v, ok := api.chattableLog[0].(tgbotapi.MessageConfig)
+	if !ok {
+		t.Errorf("could not cast value %v", api.chattableLog[0])
+	}
+
 	if v.Text != "This is a reminder to call /pidor" || v.ChatID != 100 {
 		t.Errorf("strange values in the message: %v", v)
 	}
 
-	v = api.chattableLog[1].(tgbotapi.MessageConfig)
+	v, ok = api.chattableLog[1].(tgbotapi.MessageConfig)
+	if !ok {
+		t.Errorf("could not cast value %v", api.chattableLog[0])
+	}
+
 	if v.Text != "This is a reminder to call /pidor" || v.ChatID != 300 {
 		t.Errorf("strange values in the message: %v", v)
 	}
