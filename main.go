@@ -17,9 +17,9 @@ import (
 )
 
 type BotMessage struct {
-	chatID    int64
-	message   string
-	isSticker bool
+	ChatID    int64
+	Message   string
+	IsSticker bool
 }
 
 func initSqliteDB() *sql.DB {
@@ -71,34 +71,34 @@ func refreshTimestamp(db SQLConnection) {
 var DEBUG = false //nolint
 
 type Messager struct {
-	api TelegramAPI
+	Api TelegramAPI
 }
 
-func (m *Messager) sendMessage(msg BotMessage) {
+func (m *Messager) SendMessage(msg BotMessage) {
 	log.Printf("Got a message request!")
 
 	var botMsg tgbotapi.Chattable
 
-	if msg.isSticker {
-		botMsg = tgbotapi.NewStickerShare(msg.chatID, msg.message)
+	if msg.IsSticker {
+		botMsg = tgbotapi.NewStickerShare(msg.ChatID, msg.Message)
 	} else {
-		botMsg = tgbotapi.NewMessage(msg.chatID, msg.message)
+		botMsg = tgbotapi.NewMessage(msg.ChatID, msg.Message)
 	}
 
 	log.Printf("Sending a message: %#v", botMsg)
 
-	if _, err := m.api.Send(botMsg); err != nil {
+	if _, err := m.Api.Send(botMsg); err != nil {
 		log.Printf("%v\n", err)
 	}
 }
 
 type ChatConfig struct {
-	shouldSendReminder bool
-	timezone           string
+	ShouldSendReminder bool
+	Timezone           string
 }
 
 func (cc *ChatConfig) String() string {
-	return fmt.Sprintf("ChatConfig{%v, %v}", cc.shouldSendReminder, cc.timezone)
+	return fmt.Sprintf("ChatConfig{%v, %v}", cc.ShouldSendReminder, cc.Timezone)
 }
 
 type TimeZoneConfig struct {
@@ -180,14 +180,14 @@ func initBot(db SQLConnection, bot TelegramAPI) BankoBotInterface {
 	defer rows.Close()
 
 	bc := BotConfig{
-		db:            db,
-		cron:          c,
-		regMsg:        regMsg,
-		wedMsg:        wedMsg,
-		chatIDs:       chatIDs,
-		timeZones:     timezones,
-		messager:      Messager{api: bot},
-		notifyChannel: make(chan Command),
+		DB:                db,
+		Cron:              c,
+		RegularMessages:   regMsg,
+		WednesdayMessages: wedMsg,
+		ChatIDs:           chatIDs,
+		TimeZones:         timezones,
+		Messager:          Messager{Api: bot},
+		NotifyChannel:     make(chan Command),
 	}
 	now := time.Now()
 	reader := SQLRowReader{DBRows: rows}
@@ -200,7 +200,7 @@ func initBot(db SQLConnection, bot TelegramAPI) BankoBotInterface {
 
 	err = rows.Err()
 	if err != nil {
-		log.Printf("%v", err) // TODO probably should fail here.
+		log.Printf("%v", err) // TODO probably should fail fatal error here.
 	}
 
 	setupCronTasks(&bc, db, c)
@@ -215,7 +215,7 @@ func setupCronTasks(bc BankoBotInterface, db SQLConnection, c CronRepo) {
 		log.Fatalf("%v\n", err)
 	}
 
-	err = c.AddFunc("CRON_TZ=Europe/Kiev 0 23 * * *", bc.remindJob(db))
+	err = c.AddFunc("CRON_TZ=Europe/Kiev 0 23 * * *", bc.RemindJob(db))
 	if err != nil {
 		log.Fatalf("%v\n", err)
 	}
@@ -226,7 +226,7 @@ func setupCronTasks(bc BankoBotInterface, db SQLConnection, c CronRepo) {
 			log.Fatalf("%v\n", err)
 		}
 
-		err = c.AddFunc("CRON_TZ=Europe/Kiev */2 * * * *", bc.remindJob(db))
+		err = c.AddFunc("CRON_TZ=Europe/Kiev */2 * * * *", bc.RemindJob(db))
 		if err != nil {
 			log.Fatalf("%v\n", err)
 		}
@@ -296,7 +296,7 @@ type InsertCommand struct {
 }
 
 func (c InsertCommand) Do(botConfig BankoBotInterface, db SQLConnection) {
-	botConfig.addNewChat(db, c.chatID)
+	botConfig.AddNewChat(db, c.chatID)
 }
 
 type NotifyCommand BotMessage
