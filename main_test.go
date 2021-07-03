@@ -116,21 +116,26 @@ func TestBroadcastMessages(t *testing.T) {
 		t.Errorf("Got wrong amt of items: %v", len(api.chattableLog))
 	}
 
-	v, ok := api.chattableLog[0].(tgbotapi.MessageConfig)
+	v := checkMessage(t, api.chattableLog[0])
+	v2 := checkMessage(t, api.chattableLog[1])
+
+	if v.ChatID+v2.ChatID != 400 {
+		t.Errorf("Bad calls to sendReminder: %v, %v, expected 100 and 300", v, v2)
+	}
+}
+
+func checkMessage(t *testing.T, mc tgbotapi.Chattable) tgbotapi.MessageConfig {
+	t.Helper()
+
+	v, ok := mc.(tgbotapi.MessageConfig)
+
 	if !ok {
-		t.Errorf("could not cast value %v", api.chattableLog[0])
+		t.Errorf("could not cast value %v", mc)
 	}
 
-	if v.Text != "This is a reminder to call /pidor" || v.ChatID != 100 {
+	if v.Text != "This is a reminder to call /pidor" || (v.ChatID != 100 && v.ChatID != 300) {
 		t.Errorf("strange values in the message: %v", v)
 	}
 
-	v, ok = api.chattableLog[1].(tgbotapi.MessageConfig)
-	if !ok {
-		t.Errorf("could not cast value %v", api.chattableLog[0])
-	}
-
-	if v.Text != "This is a reminder to call /pidor" || v.ChatID != 300 {
-		t.Errorf("strange values in the message: %v", v)
-	}
+	return v
 }
