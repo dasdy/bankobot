@@ -115,10 +115,10 @@ func (bc *BotConfig) addJobsUnsafe(timezone string, chatID int64, shouldNotify b
 			log.Printf("A regular job started: sending message to %v", chatId)
 			bc.NotifyChannel <- NotifyCommand{ChatID: chatId, Message: regMsgGen.Get(), IsSticker: false}
 		})
-		wedMsgGen := ChanMessageGenerator(bc.WednesdayMessages)
-		wednesdayJob := bc.timeZoneJob(timezone, func(chatId int64) {
-			bc.NotifyChannel <- NotifyCommand{ChatID: chatId, Message: wedMsgGen.Get(), IsSticker: false}
-		})
+		// wedMsgGen := ChanMessageGenerator(bc.WednesdayMessages)
+		// wednesdayJob := bc.timeZoneJob(timezone, func(chatId int64) {
+		// 	bc.NotifyChannel <- NotifyCommand{ChatID: chatId, Message: wedMsgGen.Get(), IsSticker: false}
+		// })
 
 		// addCronFunc(timeZoneCron, timezone, "20 4 * * *", regularJob)
 		// addCronFunc(timeZoneCron, timezone, "20 16 * * 0-2,4-6", regularJob)
