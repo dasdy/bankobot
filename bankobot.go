@@ -120,9 +120,9 @@ func (bc *BotConfig) addJobsUnsafe(timezone string, chatID int64, shouldNotify b
 			bc.NotifyChannel <- NotifyCommand{ChatID: chatId, Message: wedMsgGen.Get(), IsSticker: false}
 		})
 
-		addCronFunc(timeZoneCron, timezone, "20 4 * * *", regularJob)
-		addCronFunc(timeZoneCron, timezone, "20 16 * * 0-2,4-6", regularJob)
-		addCronFunc(timeZoneCron, timezone, "20 16 * * 3", wednesdayJob)
+		// addCronFunc(timeZoneCron, timezone, "20 4 * * *", regularJob)
+		// addCronFunc(timeZoneCron, timezone, "20 16 * * 0-2,4-6", regularJob)
+		// addCronFunc(timeZoneCron, timezone, "20 16 * * 3", wednesdayJob)
 
 		if DEBUG {
 			addCronFunc(timeZoneCron, timezone, "* * * * *", regularJob)
