@@ -10,7 +10,7 @@ import (
 	"strings"
 	"time"
 
-	tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api"
+	tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api/v5"
 	"github.com/joho/godotenv"
 	_ "github.com/mattn/go-sqlite3"
 	"github.com/robfig/cron"
@@ -80,7 +80,7 @@ func (m *Messager) SendMessage(msg BotMessage) {
 	var botMsg tgbotapi.Chattable
 
 	if msg.IsSticker {
-		botMsg = tgbotapi.NewStickerShare(msg.ChatID, msg.Message)
+		botMsg = tgbotapi.NewSticker(msg.ChatID, tgbotapi.FileID(msg.Message))
 	} else {
 		botMsg = tgbotapi.NewMessage(msg.ChatID, msg.Message)
 	}
@@ -250,10 +250,7 @@ func initBotConfig(db SQLConnection) (*tgbotapi.UpdatesChannel, BankoBotInterfac
 	u := tgbotapi.NewUpdate(0)
 	u.Timeout = 600
 
-	updates, err := bot.GetUpdatesChan(u)
-	if err != nil {
-		log.Panic(err)
-	}
+	updates := bot.GetUpdatesChan(u)
 
 	return &updates, initBot(db, bot)
 }
